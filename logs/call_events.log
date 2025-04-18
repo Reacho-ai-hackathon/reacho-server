@@ -1,5 +1,0 @@
-{"timestamp": "2025-04-18T00:41:49.796307", "call_sid": "CAc94909aca9654f5b014d9006a0c6a35b", "event_type": "initiated", "data": {"name": "Baby", "phone_number": "+918374415772", "company": "Tilicho Labs", "product_interest": "Cloud Services"}}
-{"timestamp": "2025-04-18T00:41:50.040078", "call_sid": "CAc94909aca9654f5b014d9006a0c6a35b", "event_type": "initiated"}
-{"timestamp": "2025-04-18T00:41:55.032273", "call_sid": "CAc94909aca9654f5b014d9006a0c6a35b", "event_type": "ringing"}
-{"timestamp": "2025-04-18T00:42:06.958533", "call_sid": "CAc94909aca9654f5b014d9006a0c6a35b", "event_type": "in-progress"}
-{"timestamp": "2025-04-18T00:42:20.257061", "call_sid": "CAc94909aca9654f5b014d9006a0c6a35b", "event_type": "completed"}

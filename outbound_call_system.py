@@ -16,6 +16,13 @@ from google.cloud import texttospeech
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+
+from gevent import pywsgi
+from geventwebsocket.handler import WebSocketHandler
+
+
+ngrok_url = os.getenv('NGROK_URL', 'https://3e54-2405-201-c01e-40d3-bc8f-6e8c-9cee-acfb.ngrok-free.app')
+
 # Load environment variables
 load_dotenv()
 
@@ -55,6 +62,7 @@ class CallOrchestrator:
             with open(csv_file_path, 'r') as file:
                 csv_reader = csv.DictReader(file)
                 for row in csv_reader:
+                    print("Processing row", row)
                     # Validate required fields
                     if 'phone_number' not in row:
                         print(f"Skipping row, missing phone_number: {row}")
@@ -135,11 +143,12 @@ class VoiceCallService:
     def __init__(self):
         self.client = twilio_client
         self.from_number = os.getenv('TWILIO_PHONE_NUMBER')
-        self.callback_url = f"https://4250-2406-7400-43-1319-450a-e7c8-708-1397.ngrok-free.app/outbound_call"
-        self.status_callback = f"https://4250-2406-7400-43-1319-450a-e7c8-708-1397.ngrok-free.app/call_status"
+        self.callback_url = f"{ngrok_url}/outbound_call"
+        self.status_callback = f"{ngrok_url}/call_status"
     
     def make_call(self, lead_info):
         """Initiate an outbound call using Twilio"""
+        print(f"Making call to {lead_info['phone_number']}")
         call = self.client.calls.create(
             to=lead_info['phone_number'],
             from_=self.from_number,
@@ -389,6 +398,15 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
+
+@socketio.on('connect')
+def handle_connect():
+    print("Client connected to SocketIO")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print("Client disconnected from SocketIO")
+
 @app.route('/')
 def index():
     return "Reacho Outbound Voice AI System is running!"
@@ -425,6 +443,7 @@ def outbound_call():
     """Handle outbound call connection"""
     response = VoiceResponse()
     call_sid = request.values.get('CallSid')
+    print("in out bound allacall sid", call_sid)
     
     if call_sid in call_states:
         # Get lead information
@@ -446,9 +465,17 @@ def outbound_call():
 
 def start_streaming(call_sid):
     """Configure Twilio to stream audio to our WebSocket"""
+    url = f"wss://{ngrok_url.replace('https://', '').replace('http://', '')}/stream/{call_sid}"
+    print("starting streaming on websocket ", url)
     response = VoiceResponse()
     connect = response.connect()
-    connect.stream(url=f'wss://{request.host}/stream/{call_sid}')
+    connect.stream(
+    url=url,
+        status_callback=f"{ngrok_url}/stream_status",
+        status_callback_method="POST",
+        track="inbound_track"
+    )
+
     
     # Add gather to keep the call open and listen
     gather = Gather(input='speech', action='/process_speech', method='POST', speechTimeout='auto')
@@ -474,6 +501,11 @@ def process_speech():
     
     return Response(str(response), mimetype='text/xml')
 
+@app.route('/stream_status', methods=['POST'])
+def stream_status():
+    print(">>> Stream status update:", dict(request.values))
+    return Response("", status=200)
+
 @app.route('/call_status', methods=['POST'])
 def call_status():
     """Handle call status updates from Twilio"""
@@ -485,21 +517,36 @@ def call_status():
     
     return jsonify(result)
 
+@app.before_request
+def log_every_request():
+    print(f"[Flask] Incoming: {request.method} {request.path}")
+
 @app.route('/stream/<call_sid>')
 def stream(call_sid):
-    """WebSocket endpoint for audio streaming"""
-    if request.environ.get('wsgi.websocket'):
-        ws = request.environ['wsgi.websocket']
-        active_connections[call_sid] = ws
-        
-        # Start a thread for handling the WebSocket connection
-        threading.Thread(target=handle_websocket, args=(ws, call_sid)).start()
-        
-        return ""
-    return "WebSocket connection failed", 400
+    print(f"[Flask] WebSocket stream endpoint hit for: {call_sid}")
+    
+    ws = request.environ.get('wsgi.websocket')
+    if not ws:
+        print(f"[Flask] ❌ No WebSocket found in request.environ")
+        return "WebSocket connection failed", 400
+
+    print(f"WebSocket connected for call_sid: {call_sid}")
+    active_connections[call_sid] = ws
+
+    try:
+        handle_websocket(ws, call_sid)
+    except Exception as e:
+        print(f"WebSocket handler error: {e}")
+    finally:
+        print(f"WebSocket closing for call_sid: {call_sid}")
+        if call_sid in active_connections:
+            del active_connections[call_sid]
+
+    return ""  # Not actually used, socket stays open
 
 def handle_websocket(ws, call_sid):
     """Handle WebSocket connection for audio streaming"""
+    print("handling websocket connection", call_sid)
     try:
         # Get services
         speech_recognition = call_orchestrator.speech_recognition
@@ -609,10 +656,22 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "ok"})
 
+# if __name__ == '__main__':
+#     # Create necessary directories
+#     os.makedirs('logs', exist_ok=True)
+#     os.makedirs('temp_csv', exist_ok=True)
+    
+#     # Run the Flask app with SocketIO
+#     socketio.run(app, host=os.getenv('HOST', '0.0.0.0'), port=int(os.getenv('PORT', 5000)), debug=True, allow_unsafe_werkzeug=True)
+
+
 if __name__ == '__main__':
-    # Create necessary directories
     os.makedirs('logs', exist_ok=True)
     os.makedirs('temp_csv', exist_ok=True)
-    
-    # Run the Flask app with SocketIO
-    socketio.run(app, host=os.getenv('HOST', '0.0.0.0'), port=int(os.getenv('PORT', 5000)), debug=True, allow_unsafe_werkzeug=True)
+
+    server = pywsgi.WSGIServer(
+        (os.getenv('HOST', '0.0.0.0'), int(os.getenv('PORT', 5000))),
+        app,
+        handler_class=WebSocketHandler
+    )
+    server.serve_forever()
