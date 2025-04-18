@@ -31,7 +31,7 @@ tts_client = texttospeech.TextToSpeechClient()
 
 # Configure Gemini API
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('models/gemini-1.5-pro-latest')
 
 # Global variables
 call_queue = Queue()  # Queue for managing outbound calls
