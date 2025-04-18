@@ -1,7 +1,6 @@
 import time
 import threading
 from datetime import datetime
-from queue import Queue
 from .voice_call_service import VoiceCallService
 from .speech_recognition_service import SpeechRecognitionService
 from .ai_response_handler import AIResponseHandler
@@ -35,7 +34,7 @@ class CallOrchestrator:
                     if 'phone_number' not in row:
                         continue
                     call_queue.put(row)
-            return {"status": "success", "message": f"Processed CSV and queued calls"}
+            return {"status": "success", "message": "Processed CSV and queued calls"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 

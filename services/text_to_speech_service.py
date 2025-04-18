@@ -22,4 +22,5 @@ class TextToSpeechService:
             )
             return response.audio_content
         except Exception as e:
+            print(f"Error synthesizing speech: {e}")
             return None

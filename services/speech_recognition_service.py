@@ -32,4 +32,5 @@ class SpeechRecognitionService:
                 is_final = result.is_final
                 yield (transcript, is_final)
         except Exception as e:
+            print(f"Error during streaming recognition: {e}")
             yield (None, None)

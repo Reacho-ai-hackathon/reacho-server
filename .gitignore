@@ -3,3 +3,4 @@ env/
 google_creds.json
 logs/
 temp_csv/
+__pycache__/

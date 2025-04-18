@@ -32,4 +32,5 @@ class VoiceCallService:
             self.client.calls(call_sid).update(status="completed")
             return {"status": "success", "message": f"Call {call_sid} ended"}
         except Exception as e:
+            print(f"Error ending call: {e}")
             return {"status": "error", "message": str(e)}

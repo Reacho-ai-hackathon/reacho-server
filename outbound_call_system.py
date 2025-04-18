@@ -1,12 +1,7 @@
 import os
-import csv
 import json
 import base64
-import asyncio
-import threading
-import time
 from queue import Queue
-from datetime import datetime
 from flask import Flask, request, Response, jsonify
 from flask_socketio import SocketIO
 from twilio.twiml.voice_response import VoiceResponse, Gather
@@ -15,6 +10,7 @@ from google.cloud import speech
 from google.cloud import texttospeech
 import google.generativeai as genai
 from dotenv import load_dotenv
+from services.call_orchestrator import CallOrchestrator
 
 
 from gevent import pywsgi
@@ -45,23 +41,16 @@ call_queue = Queue()  # Queue for managing outbound calls
 call_states = {}      # Store call state information
 active_connections = {}  # WebSocket connections
 
-from services.call_orchestrator import CallOrchestrator
-from services.voice_call_service import VoiceCallService
-from services.speech_recognition_service import SpeechRecognitionService
-from services.ai_response_handler import AIResponseHandler
-from services.text_to_speech_service import TextToSpeechService
-from services.data_logging_service import DataLoggingService
-
 # Initialize global state and orchestrator
 call_orchestrator = CallOrchestrator(call_queue, call_states, active_connections)
 
-# ===== Flask Routes =====
 
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
+# ===== Flask Routes =====
 
 @socketio.on('connect')
 def handle_connect():
@@ -191,7 +180,7 @@ def stream(call_sid):
     
     ws = request.environ.get('wsgi.websocket')
     if not ws:
-        print(f"[Flask] ❌ No WebSocket found in request.environ")
+        print("[Flask] ❌ No WebSocket found in request.environ")
         return "WebSocket connection failed", 400
 
     print(f"WebSocket connected for call_sid: {call_sid}")

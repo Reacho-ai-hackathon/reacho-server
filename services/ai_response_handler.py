@@ -25,6 +25,7 @@ class AIResponseHandler:
                 call_states[call_sid]['responses'].append(ai_text)
             return ai_text
         except Exception as e:
+            print(f"Error generating response: {e}")
             return "I'm sorry, I'm having trouble processing that right now. Could you please repeat?"
 
     def _create_context(self, lead_info):
