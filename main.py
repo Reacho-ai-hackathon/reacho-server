@@ -1,16 +1,18 @@
 import os
 import json
 import base64
+import shutil  # Import shutil for file operations
 from datetime import datetime
 from queue import Queue
 from werkzeug.utils import secure_filename
-from fastapi import FastAPI, WebSocket, Request, Response
+from fastapi import FastAPI, WebSocket, Request, Response, UploadFile, File # Import UploadFile and File
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client
 from dotenv import load_dotenv
 from services.call_orchestrator import CallOrchestrator
+import aiofiles # Import aiofiles for async file operations
 
 # Load environment variables
 load_dotenv()
@@ -38,22 +40,34 @@ async def index():
     return "Reacho Outbound Voice AI System (FastAPI)"
 
 @app.post('/upload_csv')
-async def upload_csv(request: Request):
-    form_data = await request.form()
-    if 'file' not in form_data:
-        return JSONResponse({"status": "error", "message": "No file part"}, status_code=400)
-    
-    file = form_data['file']
+async def upload_csv(file: UploadFile = File(...)): # Use FastAPI's File parameter
+    if not file:
+        return JSONResponse({"status": "error", "message": "No file uploaded"}, status_code=400)
+
     if not file.filename:
         return JSONResponse({"status": "error", "message": "No selected file"}, status_code=400)
-    
+
     if not file.filename.endswith('.csv'):
         return JSONResponse({"status": "error", "message": "File must be a CSV"}, status_code=400)
-    
+
     temp_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_csv')
     os.makedirs(temp_path, exist_ok=True)
-    file_path = os.path.join(temp_path, secure_filename(file.filename))
-    await file.save(file_path)
+    # Use secure_filename to prevent directory traversal issues
+    safe_filename = secure_filename(file.filename)
+    file_path = os.path.join(temp_path, safe_filename)
+
+    try:
+        # Asynchronously read the file content and write it to the destination
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            while content := await file.read(1024 * 1024):  # Read file in chunks (e.g., 1MB)
+                await out_file.write(content)
+        print(f"File saved successfully to: {file_path}")
+    except Exception as e:
+        print(f"Error saving file: {e}")
+        return JSONResponse({"status": "error", "message": f"Could not save file: {e}"}, status_code=500)
+    finally:
+        # Ensure the UploadFile is closed
+        await file.close()
 
     # Process the CSV file
     result = call_orchestrator.process_csv(file_path)
