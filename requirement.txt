@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+twilio
+google-cloud-speech
+google-cloud-texttospeech
+python-dotenv
+aiofiles
+httpx
+google-generativeai
