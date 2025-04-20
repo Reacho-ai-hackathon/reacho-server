@@ -1,7 +1,8 @@
 import asyncio
 import logging
 from google.cloud import speech
-import io
+import os
+from collections import defaultdict
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -14,8 +15,8 @@ class SpeechRecognitionService:
         logger.debug("Initializing SpeechRecognitionService")
         self.client = speech_client
         # Add buffer to accumulate audio chunks
-        self.audio_buffer = bytearray()
-        self.min_buffer_size = 4000  # Minimum buffer size before processing (4KB)
+        self.buffers = defaultdict(bytearray)  # stores audio buffers per call_sid
+        self.min_buffer_size = 16000  # bytes ( ~1.5 seconds (160 * 75 = ~12,000 bytes) of Twilio 8kHz mulaw audio)
 
     def get_streaming_config(self):
         return speech.StreamingRecognitionConfig(
@@ -28,35 +29,96 @@ class SpeechRecognitionService:
             interim_results=True,
         )
 
-    async def process_audio_stream(self, audio_chunk):
-        logger.debug(f"Processing audio chunk of size: {len(audio_chunk)} bytes")
+    # async def process_audio_stream(self, audio_chunk: bytes) -> str | None:
+    #     try:
+    #         logger.debug(f"Received audio chunk of size: {len(audio_chunk)} bytes")
+
+    #         # Optional: Save raw audio for debugging
+    #         debug_audio_path = f"debug_audio_{os.getpid()}.mulaw"
+    #         with open(debug_audio_path, "ab") as f:
+    #             f.write(audio_chunk)
+    #         logger.debug(f"Appended audio to {debug_audio_path}")
+
+    #         if len(audio_chunk) < self.min_buffer_size:
+    #             logger.info(f"Not enough audio buffered yet ({len(audio_chunk)} < {self.min_buffer_size})")
+    #             return None
+
+    #         config = speech.RecognitionConfig(
+    #             encoding=speech.RecognitionConfig.AudioEncoding.MULAW,
+    #             sample_rate_hertz=8000,
+    #             language_code="en-US",
+    #             audio_channel_count=1,
+    #         )
+
+    #         audio = speech.RecognitionAudio(content=audio_chunk)
+
+    #         logger.info("Sending audio to Google STT for recognition...")
+    #         response = self.client.recognize(config=config, audio=audio)
+    #         logger.info(f"STT response received with {len(response.results)} results")
+
+    #         for result in response.results:
+    #             if result.alternatives:
+    #                 transcript = result.alternatives[0].transcript
+    #                 logger.info(f"Transcript: {transcript} (final: {result.is_final})")
+    #                 return transcript
+
+    #         logger.warning("STT returned no valid transcript")
+    #         return None
+
+    #     except Exception as e:
+    #         logger.error(f"Exception in process_audio_stream: {e}", exc_info=True)
+    #         return None
+
+    async def process_audio_stream(self, call_sid: str, audio_chunk: bytes) -> str | None:
         try:
-            # Add chunk to buffer
-            self.audio_buffer.extend(audio_chunk)
-            
-            # Only process if we have enough audio data
-            if len(self.audio_buffer) < self.min_buffer_size:
-                logger.debug(f"Buffer size: {len(self.audio_buffer)} bytes - waiting for more audio")
+            logger.debug(f"[{call_sid}] Received audio chunk of size: {len(audio_chunk)}")
+
+            # Append to the per-call buffer
+            self.buffers[call_sid] += audio_chunk
+            current_size = len(self.buffers[call_sid])
+            logger.debug(f"[{call_sid}] Current buffer size: {current_size}")
+
+            # Optional: Save for debugging
+            with open(f"debug_audio_{call_sid}.mulaw", "ab") as f:
+                f.write(audio_chunk)
+
+            # Wait until we have enough data
+            if current_size < self.min_buffer_size:
+                logger.info(f"[{call_sid}] Not enough audio buffered yet ({current_size} < {self.min_buffer_size})")
                 return None
-                
-            # Use asyncio.to_thread for CPU-bound operations
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None, 
-                self._process_audio_sync, 
-                bytes(self.audio_buffer)
+
+            logger.info(f"[{call_sid}] Buffer full — sending to STT")
+
+            # Configure Google STT
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.MULAW,
+                sample_rate_hertz=8000,
+                language_code="en-US",
+                audio_channel_count=1,
             )
-            
-            # Clear buffer after processing
-            self.audio_buffer = bytearray()
-            
-            if result:
-                logger.info(f"Transcription result: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Error during streaming recognition: {e}", exc_info=True)
+
+            audio = speech.RecognitionAudio(content=bytes(self.buffers[call_sid]))
+
+            # Reset the buffer immediately (or keep tail if desired)
+            self.buffers[call_sid] = bytearray()
+
+            # Recognize
+            response = self.client.recognize(config=config, audio=audio)
+            logger.info(f"[{call_sid}] STT returned {len(response.results)} results")
+
+            for result in response.results:
+                if result.alternatives:
+                    transcript = result.alternatives[0].transcript
+                    logger.info(f"[{call_sid}] Final transcript: {transcript}")
+                    return transcript
+
+            logger.warning(f"[{call_sid}] STT returned no valid transcript")
             return None
-            
+
+        except Exception as e:
+            logger.error(f"[{call_sid}] Error in process_audio_stream: {e}", exc_info=True)
+            return None         
+    
     def _process_audio_sync(self, audio_chunk):
         try:
             logger.debug(f"Processing accumulated audio of size: {len(audio_chunk)} bytes")

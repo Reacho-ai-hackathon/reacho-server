@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 import base64
 import logging
 from datetime import datetime
@@ -111,82 +112,49 @@ async def upload_csv(file: UploadFile = File(...), background_tasks: BackgroundT
     logger.info("CSV upload and processing completed successfully")
     return {"status": "success", "message": "File uploaded and processing started."}
 
+# @app.post("/outbound_call")
+# async def outbound_call(request: Request):
+#     form = await request.form()
+#     call_sid = form.get("CallSid")
+#     logger.info(f"Outbound call webhook received for call_sid: {call_sid}")
+#     response_text = f"Hello! This is AI calling you. How can I assist you today?"
+#     response = VoiceResponse()
+#     response.say(response_text)
+#     # Start streaming audio to websocket
+#     ngrok_url = os.getenv("NGROK_URL")
+#     logger.info(f"Using ngrok URL: {ngrok_url}")
+#     stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
+#     logger.info(f"Stream URL created: {stream_url}")
+#     connect = Connect()
+#     connect.stream(url=stream_url, track="both_tracks")
+#     response.append(connect)
+#     # # Add Gather to keep call open and listen to speech
+#     gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
+#     response.append(gather)
+#     logger.info(f"Returning TwiML response for call_sid: {call_sid}")
+#     logger.info(f"Returning TwiML response for process_speech call_sid: {call_sid}")
+#     return Response(content=str(response), media_type="text/xml")
+
+
 @app.post("/outbound_call")
 async def outbound_call(request: Request):
     form = await request.form()
     call_sid = form.get("CallSid")
     logger.info(f"Outbound call webhook received for call_sid: {call_sid}")
-    response_text = f"Hello! This is AI calling you. How can I assist you today?"
-    response = VoiceResponse()
-    response.say(response_text)
-    # Start streaming audio to websocket
+
     ngrok_url = os.getenv("NGROK_URL")
-    logger.info(f"Using ngrok URL: {ngrok_url}")
     stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
-    logger.info(f"Stream URL created: {stream_url}")
+    logger.info(f"Stream URL: {stream_url}")
+
+    response = VoiceResponse()
+
     connect = Connect()
     connect.stream(url=stream_url)
     response.append(connect)
-    # Add Gather to keep call open and listen to speech
-    gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
-    response.append(gather)
-    logger.info(f"Returning TwiML response for call_sid: {call_sid}")
-    logger.info(f"Returning TwiML response for process_speech call_sid: {call_sid}")
+
     return Response(content=str(response), media_type="text/xml")
 
-@app.post("/process_speech")
-async def process_speech(request: Request):
-    form = await request.form()
-    call_sid = form.get("CallSid")
-    speech_result = form.get("SpeechResult")
-    logger.info(f"Process speech webhook received for call_sid: {call_sid}")
-    
-    response = VoiceResponse()
-    
-    # Process the transcript if available from Twilio's speech recognition
-    if speech_result and call_sid in call_orchestrator.call_states:
-        logger.info(f"Speech result from Twilio: {speech_result}")
-        # Update transcript in call state
-        call_orchestrator.call_states[call_sid]["transcript"] += " " + speech_result
-        # Log the transcript
-        await call_orchestrator.data_logger.log_transcript(call_sid, speech_result, True)
-        
-        # Get lead info and generate AI response
-        lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
-        lead_info['call_sid'] = call_sid  # Ensure call_sid is in lead_info
-        
-        # Generate AI response
-        logger.info(f"Generating AI response for speech result")
-        ai_response = await call_orchestrator.ai_handler.generate_response(speech_result, lead_info)
-        logger.info(f"AI response generated: {ai_response[:50]}..." if len(ai_response) > 50 else f"AI response generated: {ai_response}")
-        
-        # Log the AI response
-        await call_orchestrator.data_logger.log_ai_response(call_sid, ai_response)
-        
-        # Say the response
-        response.say(ai_response)
-    elif call_sid in call_orchestrator.call_states:
-        # Use last generated response if available
-        last_response = call_orchestrator.call_states[call_sid]["responses"][-1] if call_orchestrator.call_states[call_sid]["responses"] else ""
-        logger.info(f"Using last response: {last_response[:50]}..." if len(last_response) > 50 else f"Using last response: {last_response}")
-        response.say(last_response or "Sorry, I didn't catch that. Could you repeat?")
-    else:
-        logger.warning(f"No call state found for call_sid: {call_sid}")
-        response.say("Sorry, I didn't catch that. Could you repeat?")
-    
-    # Continue streaming
-    ngrok_url = os.getenv("NGROK_URL")
-    stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
-    connect = Connect()
-    connect.stream(url=stream_url)
-    response.append(connect)
-    
-    # Add Gather to keep call open and listen to speech
-    gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
-    response.append(gather)
-    
-    logger.info(f"Returning TwiML response for call_sid: {call_sid}")
-    return Response(content=str(response), media_type="text/xml")
+
 
 @app.post("/call_status")
 async def call_status(request: Request):
@@ -201,18 +169,18 @@ async def call_status(request: Request):
 @app.websocket("/stream/{call_sid}")
 async def websocket_stream(websocket: WebSocket, call_sid: str):
     logger.info(f"WebSocket connection requested for call_sid: {call_sid}")
-    
+
     # Check if there's already an active connection for this call
     if call_sid in active_connections:
         logger.warning(f"Existing WebSocket connection found for call_sid: {call_sid}")
         await websocket.close(1000, "Duplicate connection")
         return
-        
+
     try:
         await websocket.accept()
         logger.info(f"WebSocket connection accepted for call_sid: {call_sid}")
         active_connections[call_sid] = websocket
-        
+
         # Initialize call state if not exists
         if call_sid not in call_orchestrator.call_states:
             logger.info(f"Creating new call state for call_sid: {call_sid}")
@@ -223,24 +191,34 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                 "responses": [],
                 "lead_info": {"call_sid": call_sid}
             }
-            
+
         # Process WebSocket messages
         try:
             logger.info(f"Starting WebSocket message loop for call_sid: {call_sid}")
             while True:
                 message = await websocket.receive_text()
                 data = json.loads(message)
-                logger.debug(f"WebSocket message received for call_sid: {call_sid}, event: {data.get('event')}")
+                logger.debug(f"WebSocket message received for call_sid: {call_sid}, event: {data.get('event')}, data: {data}")
+
+                event = data.get("event")
+
+                if event == "connected":
+                    # Handle the connected event
+                    logger.info(f"WebSocket connected for call_sid: {call_sid}")
                 
-                # Handle media events (audio processing)
-                if data.get("event") == "media":
+                elif event == "start":
+                    # Handle the start of the media stream
+                    logger.info(f"Media stream started for call_sid: {call_sid}")
+                
+                elif event == "media":
+                    # Handle incoming media (audio) data from Twilio
                     payload = data.get("media", {}).get("payload")
                     if payload:
                         try:
                             logger.debug(f"Processing audio payload for call_sid: {call_sid}")
                             audio_chunk = base64.b64decode(payload)
-                            transcript = await call_orchestrator.speech_service.process_audio_stream(audio_chunk)
-                            
+                            transcript = await call_orchestrator.speech_service.process_audio_stream(call_sid, audio_chunk)
+
                             if transcript:
                                 logger.info(f"Transcript received for call_sid: {call_sid}: {transcript}")
                                 # Update transcript in call state
@@ -249,42 +227,49 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                                 # Log the transcript
                                 await call_orchestrator.data_logger.log_transcript(call_sid, transcript, True)
                                 
-                                # Get lead info and generate AI response
+                                # Generate AI response
                                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
-                                lead_info['call_sid'] = call_sid  # Ensure call_sid is in lead_info
-                                
-                                logger.info(f"Generating AI response for call_sid: {call_sid}")
                                 ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info)
-                                logger.info(f"AI response generated for call_sid: {call_sid}: {ai_response[:50]}..." 
-                                            if len(ai_response) > 50 else f"AI response generated: {ai_response}")
+
+                                logger.info(f"AI response generated for call_sid: {call_sid}: {ai_response[:50]}..." if len(ai_response) > 50 else f"AI response generated: {ai_response}")
                                 
                                 # Log the AI response
                                 await call_orchestrator.data_logger.log_ai_response(call_sid, ai_response)
-                                
+
                                 # Convert response to speech and send back
-                                logger.info(f"Converting response to speech for call_sid: {call_sid}")
                                 audio_data = await call_orchestrator.tts_service.text_to_speech(ai_response)
                                 if audio_data:
-                                    logger.info(f"Sending audio response for call_sid: {call_sid}")
-                                    await websocket.send_bytes(audio_data)
+                                    await barge_in(websocket, data.get("streamSid"))
+                                    await send_audio_to_twilio(websocket, audio_data, data.get("streamSid"))
                                 else:
                                     logger.warning(f"No audio data generated for call_sid: {call_sid}")
                         except Exception as e:
                             logger.error(f"Error processing audio for {call_sid}: {e}", exc_info=True)
                             await call_orchestrator.data_logger.log_error('audio_processing', str(e), {'call_sid': call_sid})
-                
-                # Handle call end events
-                elif data.get("event") == "end":
-                    logger.info(f"Call end event received for call_sid: {call_sid}")
-                    if call_sid in call_orchestrator.call_states:
-                        call_orchestrator.call_states[call_sid]["status"] = "completed"
-                        await call_orchestrator.data_logger.log_call_event(call_sid, "completed")
+
+                elif event == "dtmf":
+                    # Handle DTMF tones
+                    dtmf_tones = data.get("dtmf")
+                    logger.info(f"DTMF tones detected for call_sid: {call_sid}: {dtmf_tones}")
+                    # Process DTMF tones as needed, for example to navigate a menu or trigger actions
+
+                elif event == "stop":
+                    # Handle stop event (media stream ended)
+                    logger.info(f"Media stream stopped for call_sid: {call_sid}")
                     break
-                    
+                
+                elif event == "mark":
+                    # Handle marker events, useful for analytics or logging specific moments
+                    marker = data.get("marker")
+                    logger.info(f"Marker event received for call_sid: {call_sid}: {marker}")
+
+                else:
+                    logger.warning(f"Unknown event type for call_sid: {call_sid}: {event}")
+
         except Exception as e:
             logger.error(f"Error in WebSocket message processing for {call_sid}: {e}", exc_info=True)
             await call_orchestrator.data_logger.log_error('websocket_processing', str(e), {'call_sid': call_sid})
-            
+
     except Exception as e:
         logger.error(f"WebSocket connection error for {call_sid}: {e}", exc_info=True)
     finally:
@@ -294,6 +279,160 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
             del active_connections[call_sid]
         if websocket.client_state != WebSocket.DISCONNECTED:
             await websocket.close()
+            call_orchestrator.speech_service.buffers.pop(call_sid, None)
+
+async def send_audio_to_twilio(websocket, audio_data: bytes, stream_sid: str):
+    logger.info(f"Sending audio data to Twilio for streamSid: {stream_sid}")
+    # Encode raw audio (already in mulaw/8000) into base64 string
+    audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+
+    # Send the media message to Twilio
+    media_msg = {
+        "event": "media",
+        "streamSid": stream_sid,
+        "media": {
+            "payload": audio_b64
+        }
+    }
+
+    await websocket.send_text(json.dumps(media_msg))
+
+    # Generate a unique marker name
+    mark_name = str(uuid.uuid4())
+
+    # Send the mark message immediately after media to track when it's done playing
+    mark_msg = {
+        "event": "mark",
+        "streamSid": stream_sid,
+        "mark": {
+            "name": mark_name
+        }
+    }
+
+    await websocket.send_text(json.dumps(mark_msg))
+
+async def barge_in(websocket, stream_sid: str):
+    # Send a barge-in message to Twilio
+    logger.info(f"Sending barge-in message for streamSid: {stream_sid}")
+    barge_in_msg = {
+        "event": "clear",
+        "streamSid": stream_sid,
+    }
+    await websocket.send_text(json.dumps(barge_in_msg))
+
+
+# @app.websocket("/stream/{call_sid}")
+# async def websocket_stream(websocket: WebSocket, call_sid: str):
+#     logger.info(f"WebSocket connection requested for call_sid: {call_sid}")
+    
+#     # Check if there's already an active connection for this call
+#     if call_sid in active_connections:
+#         logger.warning(f"Existing WebSocket connection found for call_sid: {call_sid}")
+#         await websocket.close(1000, "Duplicate connection")
+#         return
+        
+#     try:
+#         await websocket.accept()
+#         logger.info(f"WebSocket connection accepted for call_sid: {call_sid}")
+#         active_connections[call_sid] = websocket
+        
+#         # Initialize call state if not exists
+#         if call_sid not in call_orchestrator.call_states:
+#             logger.info(f"Creating new call state for call_sid: {call_sid}")
+#             call_orchestrator.call_states[call_sid] = {
+#                 "status": "connected",
+#                 "start_time": datetime.utcnow().isoformat(),
+#                 "transcript": "",
+#                 "responses": [],
+#                 "lead_info": {"call_sid": call_sid}
+#             }
+            
+#         # Process WebSocket messages
+#         try:
+#             logger.info(f"Starting WebSocket message loop for call_sid: {call_sid}")
+#             while True:
+#                 message = await websocket.receive_text()
+#                 data = json.loads(message)
+#                 logger.debug(f"WebSocket message received for call_sid: {call_sid}, event: {data.get('event')}")
+                
+#                 # Handle media events (audio processing)
+#                 if data.get("event") == "media":
+#                     payload = data.get("media", {}).get("payload")
+#                     if payload:
+#                         try:
+#                             logger.debug(f"Processing audio payload for call_sid: {call_sid}")
+#                             audio_chunk = base64.b64decode(payload)
+#                             transcript = await call_orchestrator.speech_service.process_audio_stream(call_sid, audio_chunk)
+                            
+#                             if transcript:
+#                                 logger.info(f"Transcript received for call_sid: {call_sid}: {transcript}")
+#                                 # Update transcript in call state
+#                                 call_orchestrator.call_states[call_sid]["transcript"] += " " + transcript
+                                
+#                                 # Log the transcript
+#                                 await call_orchestrator.data_logger.log_transcript(call_sid, transcript, True)
+                                
+#                                 # Get lead info and generate AI response
+#                                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
+#                                 lead_info['call_sid'] = call_sid  # Ensure call_sid is in lead_info
+                                
+#                                 logger.info(f"Generating AI response for call_sid: {call_sid}")
+#                                 ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info)
+#                                 logger.info(f"AI response generated for call_sid: {call_sid}: {ai_response[:50]}..." 
+#                                             if len(ai_response) > 50 else f"AI response generated: {ai_response}")
+                                
+#                                 # Log the AI response
+#                                 await call_orchestrator.data_logger.log_ai_response(call_sid, ai_response)
+                                
+#                                 # Convert response to speech and send back
+#                                 logger.info(f"Converting response to speech for call_sid: {call_sid}")
+#                                 audio_data = await call_orchestrator.tts_service.text_to_speech(ai_response)
+#                                 if audio_data:
+#                                     logger.info(f"Sending audio response for call_sid: {call_sid}")
+#                                     b64_audio = base64.b64encode(audio_data).decode('utf-8')
+#                                     twilio_audio_packet = {
+#                                         "event": "media",
+#                                         "media": {
+#                                             "payload": b64_audio
+#                                         }
+#                                     }
+
+#                                     logger.info(f"Sending audio data from websocket: {twilio_audio_packet}")
+
+#                                     # send it back over WebSocket
+#                                     await websocket.send_text(json.dumps(twilio_audio_packet))
+#                                     await asyncio.sleep(0.02)
+
+
+#                                     # await websocket.send_bytes(audio_data)
+#                                 else:
+#                                     logger.warning(f"No audio data generated for call_sid: {call_sid}")
+#                         except Exception as e:
+#                             logger.error(f"Error processing audio for {call_sid}: {e}", exc_info=True)
+#                             await call_orchestrator.data_logger.log_error('audio_processing', str(e), {'call_sid': call_sid})
+                
+#                 # Handle call end events
+#                 elif data.get("event") == "end":
+#                     logger.info(f"Call end event received for call_sid: {call_sid}")
+#                     if call_sid in call_orchestrator.call_states:
+#                         call_orchestrator.call_states[call_sid]["status"] = "completed"
+#                         await call_orchestrator.data_logger.log_call_event(call_sid, "completed")
+#                     break
+                    
+#         except Exception as e:
+#             logger.error(f"Error in WebSocket message processing for {call_sid}: {e}", exc_info=True)
+#             await call_orchestrator.data_logger.log_error('websocket_processing', str(e), {'call_sid': call_sid})
+            
+#     except Exception as e:
+#         logger.error(f"WebSocket connection error for {call_sid}: {e}", exc_info=True)
+#     finally:
+#         # Clean up resources
+#         logger.info(f"Closing WebSocket connection for call_sid: {call_sid}")
+#         if call_sid in active_connections:
+#             del active_connections[call_sid]
+#         if websocket.client_state != WebSocket.DISCONNECTED:
+#             await websocket.close()
+#             call_orchestrator.speech_service.buffers.pop(call_sid, None)
 
 @app.get('/api/health')
 async def health_check():
@@ -335,6 +474,61 @@ async def shutdown():
                 logger.error(f"Error logging final state for call {call_sid}: {e}")
     
     logger.info("Shutdown complete")
+
+
+# @app.post("/process_speech")
+# async def process_speech(request: Request):
+#     form = await request.form()
+#     call_sid = form.get("CallSid")
+#     speech_result = form.get("SpeechResult")
+#     logger.info(f"Process speech webhook received for call_sid: {call_sid}")
+    
+#     response = VoiceResponse()
+    
+#     # # Process the transcript if available from Twilio's speech recognition
+#     # if speech_result and call_sid in call_orchestrator.call_states:
+#     #     logger.info(f"Speech result from Twilio: {speech_result}")
+#     #     # Update transcript in call state
+#     #     call_orchestrator.call_states[call_sid]["transcript"] += " " + speech_result
+#     #     # Log the transcript
+#     #     await call_orchestrator.data_logger.log_transcript(call_sid, speech_result, True)
+        
+#     #     # Get lead info and generate AI response
+#     #     lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
+#     #     lead_info['call_sid'] = call_sid  # Ensure call_sid is in lead_info
+        
+#     #     # Generate AI response
+#     #     logger.info("Generating AI response for speech result")
+#     #     ai_response = await call_orchestrator.ai_handler.generate_response(speech_result, lead_info)
+#     #     logger.info(f"AI response generated: {ai_response[:50]}..." if len(ai_response) > 50 else f"AI response generated: {ai_response}")
+        
+#     #     # Log the AI response
+#     #     await call_orchestrator.data_logger.log_ai_response(call_sid, ai_response)
+        
+#     #     # Say the response
+#     #     response.say(ai_response)
+#     # elif call_sid in call_orchestrator.call_states:
+#     #     # Use last generated response if available
+#     #     last_response = call_orchestrator.call_states[call_sid]["responses"][-1] if call_orchestrator.call_states[call_sid]["responses"] else ""
+#     #     logger.info(f"Using last response: {last_response[:50]}..." if len(last_response) > 50 else f"Using last response: {last_response}")
+#     #     response.say(last_response or "Sorry, I didn't catch that. Could you repeat?")
+#     # else:
+#     #     logger.warning(f"No call state found for call_sid: {call_sid}")
+#     #     response.say("Sorry, I didn't catch that. Could you repeat?")
+    
+#     # Continue streaming
+#     ngrok_url = os.getenv("NGROK_URL")
+#     stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
+#     connect = Connect()
+#     connect.stream(url=stream_url)
+#     response.append(connect)
+    
+#     # Add Gather to keep call open and listen to speech
+#     gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
+#     response.append(gather)
+    
+#     logger.info(f"Returning TwiML response for call_sid: {call_sid}")
+#     return Response(content=str(response), media_type="text/xml")
 
 if __name__ == "__main__":
     os.makedirs('logs', exist_ok=True)
