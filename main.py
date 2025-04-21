@@ -77,15 +77,18 @@ async def index():
     return "Reacho Outbound Voice AI System (FastAPI)"
 
 @app.post("/upload_csv")
-async def upload_csv(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+async def upload_csv(file: UploadFile = File(...)):
     logger.info(f"CSV upload requested: {file.filename}")
+    
     if not file.filename.endswith(".csv"):
         logger.warning(f"Invalid file type uploaded: {file.filename}")
         return JSONResponse({"status": "error", "message": "Only CSV files are accepted."}, status_code=400)
+    
     temp_dir = "temp_csv"
     os.makedirs(temp_dir, exist_ok=True)
     safe_filename = file.filename.replace(" ", "_")
     file_path = os.path.join(temp_dir, safe_filename)
+    
     try:
         logger.info(f"Saving uploaded file to {file_path}")
         async with aiofiles.open(file_path, "wb") as out_file:
@@ -93,47 +96,18 @@ async def upload_csv(file: UploadFile = File(...), background_tasks: BackgroundT
                 await out_file.write(content)
     finally:
         await file.close()
-    
-    # Process CSV and start call processing after completion
+
+    # Process CSV and then start call processing directly
     logger.info(f"Processing CSV file: {file_path}")
     result = await call_orchestrator.process_csv(file_path)
     logger.info(f"CSV processing result: {result}")
-    
-    # Use background task to start call processing
-    logger.info("Starting call processing")
-    if background_tasks:
-        logger.info("Using background tasks for call processing")
-        background_tasks.add_task(call_orchestrator.start_call_processing)
-    else:
-        # Since start_call_processing returns a task, we should create a background task
-        logger.info("Creating async task for call processing")
-        asyncio.create_task(call_orchestrator.start_call_processing())
+
+    logger.info("Starting call processing synchronously")
+    await call_orchestrator.start_call_processing()  # Now synchronous
 
     logger.info("CSV upload and processing completed successfully")
-    return {"status": "success", "message": "File uploaded and processing started."}
+    return {"status": "success", "message": "File uploaded and processing completed."}
 
-# @app.post("/outbound_call")
-# async def outbound_call(request: Request):
-#     form = await request.form()
-#     call_sid = form.get("CallSid")
-#     logger.info(f"Outbound call webhook received for call_sid: {call_sid}")
-#     response_text = f"Hello! This is AI calling you. How can I assist you today?"
-#     response = VoiceResponse()
-#     response.say(response_text)
-#     # Start streaming audio to websocket
-#     ngrok_url = os.getenv("NGROK_URL")
-#     logger.info(f"Using ngrok URL: {ngrok_url}")
-#     stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
-#     logger.info(f"Stream URL created: {stream_url}")
-#     connect = Connect()
-#     connect.stream(url=stream_url, track="both_tracks")
-#     response.append(connect)
-#     # # Add Gather to keep call open and listen to speech
-#     gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
-#     response.append(gather)
-#     logger.info(f"Returning TwiML response for call_sid: {call_sid}")
-#     logger.info(f"Returning TwiML response for process_speech call_sid: {call_sid}")
-#     return Response(content=str(response), media_type="text/xml")
 
 
 @app.post("/outbound_call")
@@ -198,7 +172,6 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
             while True:
                 message = await websocket.receive_text()
                 data = json.loads(message)
-                logger.debug(f"WebSocket message received for call_sid: {call_sid}, event: {data.get('event')}, data: {data}")
 
                 event = data.get("event")
 
@@ -209,13 +182,18 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                 elif event == "start":
                     # Handle the start of the media stream
                     logger.info(f"Media stream started for call_sid: {call_sid}")
+                    lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
+                    ai_response = await call_orchestrator.ai_handler.generate_response("Introduce yourself to the customer and start the conversation", lead_info)
+                    audio_data = await call_orchestrator.tts_service.text_to_speech(ai_response)
+                    if audio_data:
+                        logger.info(f"audio data: {audio_data}")
+                        await send_audio_to_twilio(websocket, audio_data, data.get("streamSid"))
                 
                 elif event == "media":
                     # Handle incoming media (audio) data from Twilio
                     payload = data.get("media", {}).get("payload")
                     if payload:
                         try:
-                            logger.debug(f"Processing audio payload for call_sid: {call_sid}")
                             audio_chunk = base64.b64decode(payload)
                             transcript = await call_orchestrator.speech_service.process_audio_stream(call_sid, audio_chunk)
 
@@ -320,6 +298,75 @@ async def barge_in(websocket, stream_sid: str):
     }
     await websocket.send_text(json.dumps(barge_in_msg))
 
+@app.get('/api/health')
+async def health_check():
+    return {"status": "ok"}
+
+
+@app.on_event("startup")
+async def startup():
+    logger.info("Application starting up")
+    # Create necessary directories
+    os.makedirs('logs', exist_ok=True)
+    os.makedirs('temp_csv', exist_ok=True)
+    
+    # Set up references between components
+    from services.ai_response_handler import set_call_states_ref
+    set_call_states_ref(call_states)
+    
+    logger.info("Application startup complete")
+
+@app.on_event("shutdown")
+async def shutdown():
+    logger.info("Application shutting down")
+    # Close any active connections
+    for call_sid, websocket in active_connections.items():
+        try:
+            await websocket.close(1000, "Server shutting down")
+            logger.info(f"Closed WebSocket connection for call_sid: {call_sid}")
+        except Exception as e:
+            logger.error(f"Error closing WebSocket for {call_sid}: {e}")
+    
+    # Log final call states
+    for call_sid, state in call_states.items():
+        if state.get('status') != 'completed':
+            try:
+                state['status'] = 'interrupted'
+                state['end_time'] = datetime.utcnow().isoformat()
+                await call_orchestrator.data_logger.log_call_completion(call_sid, state)
+            except Exception as e:
+                logger.error(f"Error logging final state for call {call_sid}: {e}")
+    
+    logger.info("Shutdown complete")
+
+if __name__ == "__main__":
+    os.makedirs('logs', exist_ok=True)
+    os.makedirs('temp_csv', exist_ok=True)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8555)))
+
+# @app.post("/outbound_call")
+# async def outbound_call(request: Request):
+#     form = await request.form()
+#     call_sid = form.get("CallSid")
+#     logger.info(f"Outbound call webhook received for call_sid: {call_sid}")
+#     response_text = f"Hello! This is AI calling you. How can I assist you today?"
+#     response = VoiceResponse()
+#     response.say(response_text)
+#     # Start streaming audio to websocket
+#     ngrok_url = os.getenv("NGROK_URL")
+#     logger.info(f"Using ngrok URL: {ngrok_url}")
+#     stream_url = f"wss://{ngrok_url.replace('https://','').replace('http://','')}/stream/{call_sid}"
+#     logger.info(f"Stream URL created: {stream_url}")
+#     connect = Connect()
+#     connect.stream(url=stream_url, track="both_tracks")
+#     response.append(connect)
+#     # # Add Gather to keep call open and listen to speech
+#     gather = Gather(input="speech", action="/process_speech", method="POST", speechTimeout="auto")
+#     response.append(gather)
+#     logger.info(f"Returning TwiML response for call_sid: {call_sid}")
+#     logger.info(f"Returning TwiML response for process_speech call_sid: {call_sid}")
+#     return Response(content=str(response), media_type="text/xml")
 
 # @app.websocket("/stream/{call_sid}")
 # async def websocket_stream(websocket: WebSocket, call_sid: str):
@@ -434,48 +481,6 @@ async def barge_in(websocket, stream_sid: str):
 #             await websocket.close()
 #             call_orchestrator.speech_service.buffers.pop(call_sid, None)
 
-@app.get('/api/health')
-async def health_check():
-    return {"status": "ok"}
-
-
-@app.on_event("startup")
-async def startup():
-    logger.info("Application starting up")
-    # Create necessary directories
-    os.makedirs('logs', exist_ok=True)
-    os.makedirs('temp_csv', exist_ok=True)
-    
-    # Set up references between components
-    from services.ai_response_handler import set_call_states_ref
-    set_call_states_ref(call_states)
-    
-    logger.info("Application startup complete")
-
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("Application shutting down")
-    # Close any active connections
-    for call_sid, websocket in active_connections.items():
-        try:
-            await websocket.close(1000, "Server shutting down")
-            logger.info(f"Closed WebSocket connection for call_sid: {call_sid}")
-        except Exception as e:
-            logger.error(f"Error closing WebSocket for {call_sid}: {e}")
-    
-    # Log final call states
-    for call_sid, state in call_states.items():
-        if state.get('status') != 'completed':
-            try:
-                state['status'] = 'interrupted'
-                state['end_time'] = datetime.utcnow().isoformat()
-                await call_orchestrator.data_logger.log_call_completion(call_sid, state)
-            except Exception as e:
-                logger.error(f"Error logging final state for call {call_sid}: {e}")
-    
-    logger.info("Shutdown complete")
-
-
 # @app.post("/process_speech")
 # async def process_speech(request: Request):
 #     form = await request.form()
@@ -529,9 +534,3 @@ async def shutdown():
     
 #     logger.info(f"Returning TwiML response for call_sid: {call_sid}")
 #     return Response(content=str(response), media_type="text/xml")
-
-if __name__ == "__main__":
-    os.makedirs('logs', exist_ok=True)
-    os.makedirs('temp_csv', exist_ok=True)
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8555)))

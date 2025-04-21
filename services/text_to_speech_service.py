@@ -64,28 +64,28 @@ class TextToSpeechService:
             return None
 
     def synthesize(self, text):
-            try:
-                logger.debug("Calling Google TTS API")
-                input_text = texttospeech.SynthesisInput(text=text)
-                voice = texttospeech.VoiceSelectionParams(
-                    language_code="en-IN",
-                    name="en-IN-Chirp3-HD-Aoede",  # You can dynamically adjust this
-                    ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,  # Adjust gender dynamically as needed
-                )
+        try:
+            logger.debug("Calling Google TTS API")
+            input_text = texttospeech.SynthesisInput(text=text)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Chirp-HD-F",  # You can dynamically adjust this
+                ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,  # Adjust gender dynamically as needed
+            )
 
-                audio_config = texttospeech.AudioConfig(
-                    audio_encoding=texttospeech.AudioEncoding.LINEAR16,  # Change to LINEAR16 for Twilio compatibility
-                    sample_rate_hertz=16000,  # Use a standard rate (16kHz for better clarity)
-                    speaking_rate=1.0,  # Adjustable speaking rate if needed
-                )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,  # Change to LINEAR16 for Twilio compatibility
+                sample_rate_hertz=16000,  # Use a standard rate (16kHz for better clarity)
+                speaking_rate=1.0,  # Adjustable speaking rate if needed
+            )
 
-                
-                # Get TTS response
-                response = self.client.synthesize_speech(
-                    input=input_text, voice=voice, audio_config=audio_config
-                )
-                logger.debug("Google TTS API call completed successfully")
-                return response.audio_content
-            except Exception as e:
-                logger.error(f"Error in TTS synthesis: {e}", exc_info=True)
-                return None
+            
+            # Get TTS response
+            response = self.client.synthesize_speech(
+                input=input_text, voice=voice, audio_config=audio_config
+            )
+            logger.debug("Google TTS API call completed successfully")
+            return response.audio_content
+        except Exception as e:
+            logger.error(f"Error in TTS synthesis: {e}", exc_info=True)
+            return None

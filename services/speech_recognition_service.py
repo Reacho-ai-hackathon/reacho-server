@@ -71,12 +71,9 @@ class SpeechRecognitionService:
 
     async def process_audio_stream(self, call_sid: str, audio_chunk: bytes) -> str | None:
         try:
-            logger.debug(f"[{call_sid}] Received audio chunk of size: {len(audio_chunk)}")
-
             # Append to the per-call buffer
             self.buffers[call_sid] += audio_chunk
             current_size = len(self.buffers[call_sid])
-            logger.debug(f"[{call_sid}] Current buffer size: {current_size}")
 
             # Optional: Save for debugging
             with open(f"debug_audio_{call_sid}.mulaw", "ab") as f:
@@ -84,7 +81,6 @@ class SpeechRecognitionService:
 
             # Wait until we have enough data
             if current_size < self.min_buffer_size:
-                logger.info(f"[{call_sid}] Not enough audio buffered yet ({current_size} < {self.min_buffer_size})")
                 return None
 
             logger.info(f"[{call_sid}] Buffer full — sending to STT")

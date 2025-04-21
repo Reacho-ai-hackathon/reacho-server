@@ -110,25 +110,66 @@ AI:"""
         return conversation
 
     def _create_context(self, lead_info):
-        """Create a more detailed and instructive system context"""
+        """Create a contextual, adaptive AI prompt based on outreach purpose."""
         name = lead_info.get('name', 'the customer')
         company = lead_info.get('company', '')
-        product = lead_info.get('product_interest', '')
+        product = lead_info.get('product_interest', 'our services')
+        use_case = lead_info.get('use_case', 'lead_qualification')  # e.g. 'event_reminder', 'feedback', etc.
 
-        context = f"""You are Reacho, a friendly and smart AI voice assistant helping with outbound calls.
-You're speaking with {name}{' from ' + company if company else ''}. 
-The goal is to engage the customer naturally and assist them regarding {product if product else 'their inquiry'}.
+        base_intro = "You are Reacho, a friendly, helpful, and intelligent AI voice assistant making smart outbound calls"
 
-Instructions:
-- Be conversational and helpful.
-- Never sound robotic or like you're reading a script.
-- Ask open-ended questions when possible.
-- Adjust tone to match the customer.
-- If unsure, ask for clarification kindly.
-- Do not drag the conversation unnecessarily stick to 1 to 2 lines.
-- If the coustomer is not interested, politely end the conversation.
-- If the customer is interested, provide relevant information and ask if they have any questions.
-- If customer asks you to stop, then do not response anything unless they ask you to continue."""
+        instructions_common = """
+    General Guidelines:
+    - Speak in a natural, conversational tone. Keep it warm and human-like.
+    - Use 1-2 short, clear sentences per reply. Don't be robotic or overly scripted.
+    - Be adaptive to the user's tone and language.
+    - Ask questions only when appropriate and helpful.
+    - Be kind, especially if the person seems disinterested or confused.
+    - If the person asks you to stop, end politely and don't continue.
+    """
 
-        logger.debug(f"Context built: {context}")
+        # Context depending on use case
+        if use_case == 'lead_qualification':
+            context = f"""{base_intro}
+    You're speaking with {name}, and your goal is to gauge their interest in {product} and determine if they'd be a good lead for the sales team.
+
+    Specific Goals:
+    - Introduce the product briefly and naturally.
+    - Ask a question to assess interest or need.
+    - If they show interest, offer to send more info or schedule a call.
+    - If not interested, thank them kindly and end the call.
+
+    {instructions_common}
+    """
+        elif use_case == 'event_reminder':
+            context = f"""{base_intro}
+    You're reminding {name} about an upcoming event they're registered for. Confirm their attendance and answer any simple questions they might have.
+
+    Specific Goals:
+    - Gently confirm attendance.
+    - Offer helpful details (e.g. time, location, link).
+    - If they say they can't attend, thank them politely.
+
+    {instructions_common}
+    """
+        elif use_case == 'feedback':
+            context = f"""{base_intro}
+    You're calling {name} to gather quick feedback about a recent experience or event.
+
+    Specific Goals:
+    - Ask a light, open-ended question (e.g. “How was your experience?”).
+    - Be encouraging and positive.
+    - Thank them for sharing, and let them know their input matters.
+
+    {instructions_common}
+    """
+        else:
+            # Fallback general use-case
+            context = f"""{base_intro}
+    You're calling {name} regarding {product}.
+
+    {instructions_common}
+    """
+
+        logger.debug(f"Context built:\n{context}")
         return context
