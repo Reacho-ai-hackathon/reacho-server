@@ -25,6 +25,7 @@ class CallOrchestrator:
         self.tts_service = TextToSpeechService()
         self.data_logger = DataLoggingService()
         self._processing_task = None
+        self.campaignInfo  = "";
         logger.info("CallOrchestrator initialized successfully")
 
     async def process_csv(self, csv_file_path):

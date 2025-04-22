@@ -32,10 +32,11 @@ class AIResponseHandler:
         self.model = model
         logger.info("AIResponseHandler initialized.")
 
-    async def generate_response(self, transcript, lead_info):
+    async def generate_response(self, transcript, lead_info, campaignInfo = ""):
         """Generate an AI response based on the transcript and lead information"""
         call_sid = lead_info.get('call_sid', 'unknown')
         logger.info(f"[{call_sid}] Received transcript for response: '{transcript}'")
+        logger.info(f"[{call_sid}] Campaign information: {campaignInfo}")
 
         try:
             loop = asyncio.get_running_loop()
@@ -43,7 +44,8 @@ class AIResponseHandler:
                 None,
                 self._generate_response_sync,
                 transcript,
-                lead_info
+                lead_info,
+                campaignInfo
             )
             return response
         except Exception as e:
@@ -51,14 +53,14 @@ class AIResponseHandler:
             logger.debug(traceback.format_exc())
             return "Sorry, I'm having trouble right now. Let's continue shortly."
 
-    def _generate_response_sync(self, transcript, lead_info):
+    def _generate_response_sync(self, transcript, lead_info,campaignInfo = ""):
         call_sid = lead_info.get("call_sid", "unknown")
         try:
             context = self._create_context(lead_info)
             previous_dialogue = self._get_previous_conversation(lead_info, transcript)
 
             full_prompt = f"""{context}
-
+Campaign Information: {campaignInfo}
 Here's the conversation so far:
 {previous_dialogue}
 AI:"""

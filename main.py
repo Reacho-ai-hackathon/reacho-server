@@ -5,7 +5,7 @@ import base64
 import logging
 from datetime import datetime
 from queue import Queue
-from fastapi import FastAPI, WebSocket, Request, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, WebSocket, Request, UploadFile, File,Form, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import aiofiles
@@ -14,6 +14,7 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Gather
 from services.call_orchestrator import CallOrchestrator
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
@@ -77,8 +78,11 @@ async def index():
     return "Reacho Outbound Voice AI System (FastAPI)"
 
 @app.post("/upload_csv")
-async def upload_csv(file: UploadFile = File(...)):
-    logger.info(f"CSV upload requested: {file.filename}")
+async def upload_csv(file: UploadFile = File(...),campaignInfo: str = Form(...)):
+    logger.info(f"CSV upload requested: {file.filename}, Campaign Info: {campaignInfo}");
+
+    if campaignInfo:
+        call_orchestrator.campaignInfo = campaignInfo;
     
     if not file.filename.endswith(".csv"):
         logger.warning(f"Invalid file type uploaded: {file.filename}")
@@ -207,7 +211,8 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                                 
                                 # Generate AI response
                                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
-                                ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info)
+                                campaignInfo = call_orchestrator.campaignInfo;
+                                ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info,campaignInfo)
 
                                 logger.info(f"AI response generated for call_sid: {call_sid}: {ai_response[:50]}..." if len(ai_response) > 50 else f"AI response generated: {ai_response}")
                                 
