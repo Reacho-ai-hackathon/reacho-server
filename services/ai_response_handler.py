@@ -16,7 +16,7 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
-model = genai.GenerativeModel('models/gemini-1.5-pro-latest')
+model = genai.GenerativeModel('models/gemini-2.0-flash')
 
 call_states = None
 
