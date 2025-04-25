@@ -105,7 +105,8 @@ AI:"""
             call_states[call_sid]["transcripts"].append(latest_input)
 
         history.append(f"Customer: {latest_input}")
-        conversation = "\n".join(history[-5:])  # Limit to last 5 exchanges
+        conversation = "\n".join(history)  # Limit to last 5 exchanges
+        # conversation = "\n".join(history[-5:])  # Limit to last 5 exchanges
         logger.debug(f"[{call_sid}] Conversation history:\n{conversation}")
         return conversation
 

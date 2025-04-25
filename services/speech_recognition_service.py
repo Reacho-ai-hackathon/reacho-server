@@ -1,22 +1,19 @@
-import asyncio
-import logging
-from google.cloud import speech
-import os
-from collections import defaultdict
 
-# Configure module logger
+import threading
+import queue
+import logging
+from collections import defaultdict
+from google.cloud import speech
+import asyncio
+
 logger = logging.getLogger(__name__)
 
-speech_client = speech.SpeechClient()
-
 class SpeechRecognitionService:
-    """Uses Google Speech-to-Text for real-time transcription"""
     def __init__(self):
-        logger.debug("Initializing SpeechRecognitionService")
-        self.client = speech_client
-        # Add buffer to accumulate audio chunks
-        self.buffers = defaultdict(bytearray)  # stores audio buffers per call_sid
-        self.min_buffer_size = 16000  # bytes ( ~1.5 seconds (160 * 75 = ~12,000 bytes) of Twilio 8kHz mulaw audio)
+        self.client = speech.SpeechClient()
+        self.audio_queues = defaultdict(queue.Queue)  # thread-safe queues for each call_sid
+        self.streaming_threads = {}  # call_sid -> Thread
+        self.stop_signals = defaultdict(threading.Event)  # call_sid -> Event
 
     def get_streaming_config(self):
         return speech.StreamingRecognitionConfig(
@@ -29,129 +26,80 @@ class SpeechRecognitionService:
             interim_results=True,
         )
 
-    # async def process_audio_stream(self, audio_chunk: bytes) -> str | None:
-    #     try:
-    #         logger.debug(f"Received audio chunk of size: {len(audio_chunk)} bytes")
+    async def add_audio(self, call_sid: str, audio_chunk: bytes):
+        logger.debug(f"[{call_sid}] Queued audio chunk of size {len(audio_chunk)}")
+        self.audio_queues[call_sid].put(audio_chunk)
 
-    #         # Optional: Save raw audio for debugging
-    #         debug_audio_path = f"debug_audio_{os.getpid()}.mulaw"
-    #         with open(debug_audio_path, "ab") as f:
-    #             f.write(audio_chunk)
-    #         logger.debug(f"Appended audio to {debug_audio_path}")
+    async def stop_streaming(self, call_sid: str):
+        logger.info(f"[{call_sid}] Stopping streaming thread")
+        self.stop_signals[call_sid].set()
+        self.audio_queues[call_sid].put(None)
+        thread = self.streaming_threads.get(call_sid)
+        if thread:
+            thread.join(timeout=5)
+            del self.streaming_threads[call_sid]
+        if call_sid in self.audio_queues:
+            del self.audio_queues[call_sid]
+        if call_sid in self.stop_signals:
+            del self.stop_signals[call_sid]
 
-    #         if len(audio_chunk) < self.min_buffer_size:
-    #             logger.info(f"Not enough audio buffered yet ({len(audio_chunk)} < {self.min_buffer_size})")
-    #             return None
-
-    #         config = speech.RecognitionConfig(
-    #             encoding=speech.RecognitionConfig.AudioEncoding.MULAW,
-    #             sample_rate_hertz=8000,
-    #             language_code="en-US",
-    #             audio_channel_count=1,
-    #         )
-
-    #         audio = speech.RecognitionAudio(content=audio_chunk)
-
-    #         logger.info("Sending audio to Google STT for recognition...")
-    #         response = self.client.recognize(config=config, audio=audio)
-    #         logger.info(f"STT response received with {len(response.results)} results")
-
-    #         for result in response.results:
-    #             if result.alternatives:
-    #                 transcript = result.alternatives[0].transcript
-    #                 logger.info(f"Transcript: {transcript} (final: {result.is_final})")
-    #                 return transcript
-
-    #         logger.warning("STT returned no valid transcript")
-    #         return None
-
-    #     except Exception as e:
-    #         logger.error(f"Exception in process_audio_stream: {e}", exc_info=True)
-    #         return None
-
-    async def process_audio_stream(self, call_sid: str, audio_chunk: bytes) -> str | None:
+    def _audio_generator(self, call_sid: str, save_audio: bool = False):
+        audio_save_path = None
+        audio_file = None
+        if save_audio:
+            import os
+            audio_save_dir = os.path.join("tmp_audio", f"audio_debug_{call_sid}")
+            os.makedirs(audio_save_dir, exist_ok=True)
+            audio_save_path = os.path.join(audio_save_dir, f"raw_audio_{call_sid}.pcm")
+            audio_file = open(audio_save_path, "ab")
+            logger.info(f"[{call_sid}] Saving raw audio chunks to {audio_save_path}")
         try:
-            # Append to the per-call buffer
-            self.buffers[call_sid] += audio_chunk
-            current_size = len(self.buffers[call_sid])
+            while not self.stop_signals[call_sid].is_set():
+                audio_chunk = self.audio_queues[call_sid].get()
+                if audio_chunk is None:
+                    break
+                if save_audio and audio_file:
+                    audio_file.write(audio_chunk)
+                yield speech.StreamingRecognizeRequest(audio_content=audio_chunk)
+        finally:
+            if audio_file:
+                audio_file.close()
+                logger.info(f"[{call_sid}] Finished saving raw audio to {audio_save_path}")
 
-            # Optional: Save for debugging
-            with open(f"debug_audio_{call_sid}.mulaw", "ab") as f:
-                f.write(audio_chunk)
-
-            # Wait until we have enough data
-            if current_size < self.min_buffer_size:
-                return None
-
-            logger.info(f"[{call_sid}] Buffer full — sending to STT")
-
-            # Configure Google STT
-            config = speech.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.MULAW,
-                sample_rate_hertz=8000,
-                language_code="en-US",
-                audio_channel_count=1,
-            )
-
-            audio = speech.RecognitionAudio(content=bytes(self.buffers[call_sid]))
-
-            # Reset the buffer immediately (or keep tail if desired)
-            self.buffers[call_sid] = bytearray()
-
-            # Recognize
-            response = self.client.recognize(config=config, audio=audio)
-            logger.info(f"[{call_sid}] STT returned {len(response.results)} results")
-
-            for result in response.results:
-                if result.alternatives:
-                    transcript = result.alternatives[0].transcript
-                    logger.info(f"[{call_sid}] Final transcript: {transcript}")
-                    return transcript
-
-            logger.warning(f"[{call_sid}] STT returned no valid transcript")
-            return None
-
-        except Exception as e:
-            logger.error(f"[{call_sid}] Error in process_audio_stream: {e}", exc_info=True)
-            return None         
-    
-    def _process_audio_sync(self, audio_chunk):
+    def _run_recognizer(self, call_sid: str, transcript_callback, loop):
         try:
-            logger.debug(f"Processing accumulated audio of size: {len(audio_chunk)} bytes")
-            streaming_config = self.get_streaming_config()
-
-            # Create a proper request generator
-            def request_generator():
-                # First request contains the config
-                yield speech.StreamingRecognizeRequest(
-                    streaming_config=streaming_config
-                )
-                
-                # Second request contains the audio
-                yield speech.StreamingRecognizeRequest(
-                    audio_content=audio_chunk
-                )
-
-            responses = self.client.streaming_recognize(request_generator())
-            
-            # Process responses
+            logger.info(f"[{call_sid}] _run_recognizer called")
+            requests = self._audio_generator(call_sid, save_audio=True)
+            config = self.get_streaming_config()
+            logger.info(f"[{call_sid}] requests generator created")
+            responses = self.client.streaming_recognize(config=config, requests=requests)
             for response in responses:
-                logger.debug(f"Got response with {len(response.results)} results")
-                if not response.results:
-                    continue
-                    
                 for result in response.results:
-                    if not result.alternatives:
-                        continue
-                        
-                    transcript = result.alternatives[0].transcript
-                    logger.debug(f"Got transcript: '{transcript}', is_final: {result.is_final}")
-                    
-                    if result.is_final:
-                        return transcript
-                        
-            logger.debug("No transcript found in responses")
-            return None
+                    logger.info(f"[{call_sid}] Result: {result}")
+                    if result.is_final and result.alternatives:
+                        transcript = result.alternatives[0].transcript.strip()
+                        logger.info(f"[{call_sid}] Generated transcript: {transcript}")
+                        try:
+                            if not transcript:
+                                continue
+                            # Schedule the async callback in the provided event loop
+                            future = asyncio.run_coroutine_threadsafe(transcript_callback(transcript), loop)
+                            logger.info(f"[{call_sid}] Transcript callback scheduled")
+                            result = future.result(timeout=10)
+                            logger.info(f"[{call_sid}] Transcript callback completed")
+                        except Exception as cb_exc:
+                            logger.error(f"[{call_sid}] Error in transcript callback: {cb_exc}", exc_info=True)
         except Exception as e:
-            logger.error(f"Error in sync audio processing: {e}", exc_info=True)
-            return None
+            logger.error(f"[{call_sid}] Error in Google STT stream: {e}", exc_info=True)
+
+    async def start_streaming(self, call_sid: str, transcript_callback):
+        self.stop_signals[call_sid].clear()
+        loop = asyncio.get_running_loop()
+        thread = threading.Thread(
+            target=self._run_recognizer,
+            args=(call_sid, transcript_callback, loop),
+            daemon=True,
+        )
+        self.streaming_threads[call_sid] = thread
+        thread.start()
+
