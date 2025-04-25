@@ -14,6 +14,31 @@ class TextToSpeechService:
     def __init__(self):
         self.client = tts_client
 
+    async def stream_text_to_speech(self, text, chunk_size=250):
+        """
+        Async generator that yields audio chunks as soon as each is available.
+        Splits text into chunks and streams audio for each chunk.
+        """
+        logger.info(f"[TTS] Streaming text to speech: {text[:50]}..." if len(text) > 50 else f"[TTS] Streaming text to speech: {text}")
+        loop = asyncio.get_running_loop()
+        # Split text into sentences or fixed-size chunks for streaming
+        import re
+        sentences = re.split(r'(?<=[.!?]) +', text)
+        buffer = ""
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+            buffer += sentence + " "
+            # If buffer is large enough or it's the last sentence, synthesize
+            if len(buffer) >= chunk_size or sentence == sentences[-1]:
+                raw_audio = await loop.run_in_executor(None, self.synthesize, buffer.strip())
+                if not raw_audio:
+                    yield None
+                else:
+                    mulaw_audio = await loop.run_in_executor(None, self.convert_linear16_to_mulaw, raw_audio)
+                    yield mulaw_audio
+                buffer = ""
+
     # async def text_to_speech(self, text):
     #     logger.info(f"Converting text to speech: {text[:50]}..." if len(text) > 50 else f"Converting text to speech: {text}")
     #     try:

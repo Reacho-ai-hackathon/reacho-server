@@ -145,7 +145,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
     if call_sid not in call_orchestrator.call_states:
         call_orchestrator.call_states[call_sid] = {
             "status": "connected",
-            "start_time": datetime.utcnow().isoformat(),
+            "start_time": datetime.now(timezone.utc).isoformat(),
             "transcript": "",
             "responses": [],
             "lead_info": {"call_sid": call_sid}
@@ -154,12 +154,13 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
     # Transcript callback
     async def on_transcript(transcript: str):
         nonlocal is_tts_active
-        logger.info(f"Transcription received: {transcript}")
+        logger.info(f"[FLOW] Transcription received: {transcript}")
 
         # If there is ongoing TTS, send the "clear" event to stop it
         if is_tts_active:
+            logger.info(f"[FLOW] Barge-in: Stopping previous TTS for call_sid={call_sid}")
             await barge_in(websocket, stream_sid)
-            logger.info("Sent clear event to stop ongoing TTS.")
+            logger.info("[FLOW] Sent clear event to stop ongoing TTS.")
             is_tts_active = False  # Reset TTS flag
 
         # Process transcription immediately
@@ -167,13 +168,44 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         await call_orchestrator.data_logger.log_transcript(call_sid, transcript, True)
 
         lead_info = call_orchestrator.call_states[call_sid]["lead_info"]
-        ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info)
+        logger.info(f"[FLOW] Starting streaming AI response for call_sid={call_sid}")
+        ai_stream = call_orchestrator.ai_handler.stream_response(transcript, lead_info)
+        logger.info(f"[FLOW] Real-time streaming: AI tokens to TTS for call_sid={call_sid}")
+        buffer = ""
+        is_tts_active = True
+        try:
+            async for ai_token in ai_stream:
+                buffer += ai_token
+                logger.debug(f"[FLOW] AI partial token for {call_sid}: {ai_token}")
+                # Buffer until a sentence or chunk is ready for TTS
+                if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
+                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                    chunk_count = 0
+                    async for audio_chunk in tts_stream:
+                        chunk_count += 1
+                        if audio_chunk:
+                            logger.debug(f"[FLOW] Sending TTS audio chunk {chunk_count} for {call_sid} (size={len(audio_chunk)})")
+                            await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                        else:
+                            logger.warning(f"[FLOW] Received empty TTS audio chunk for {call_sid}")
+                    logger.info(f"[FLOW] TTS streamed for buffered chunk (size={len(buffer)}): {buffer}")
+                    buffer = ""  # Reset buffer for next sentence/chunk
+            # Flush any remaining buffer after AI stream ends
+            if buffer.strip():
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                chunk_count = 0
+                async for audio_chunk in tts_stream:
+                    chunk_count += 1
+                    if audio_chunk:
+                        logger.debug(f"[FLOW] Sending TTS audio chunk {chunk_count} for {call_sid} (size={len(audio_chunk)})")
+                        await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                    else:
+                        logger.warning(f"[FLOW] Received empty TTS audio chunk for {call_sid}")
+                logger.info(f"[FLOW] TTS streamed for final buffer (size={len(buffer)}): {buffer}")
+        except Exception as e:
+            logger.error(f"[FLOW] Error during real-time AI->TTS streaming for {call_sid}: {e}")
+        logger.info(f"[FLOW] Finished real-time streaming AI->TTS for {call_sid}")
 
-        # Start TTS for AI response
-        audio_data = await call_orchestrator.tts_service.text_to_speech(ai_response)
-        if audio_data:
-            is_tts_active = True
-            await send_audio_to_twilio(websocket, audio_data, stream_sid)
 
     # Start STT streaming task
     task = asyncio.create_task(call_orchestrator.speech_service.start_streaming(call_sid, on_transcript))
@@ -189,12 +221,33 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
 
             elif event == "start":
                 stream_sid = data.get("streamSid")
-                logger.info(f"Stream started for {call_sid}")
+                logger.info(f"[FLOW] Stream started for {call_sid}")
                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
-                intro = await call_orchestrator.ai_handler.generate_response("Introduce yourself to the customer and start the conversation", lead_info)
-                audio_data = await call_orchestrator.tts_service.text_to_speech(intro)
-                if audio_data:
-                    await send_audio_to_twilio(websocket, audio_data, stream_sid)
+                # Use streaming for intro as well
+                logger.info(f"[FLOW] Starting streaming AI intro for call_sid={call_sid}")
+                ai_stream = call_orchestrator.ai_handler.stream_response("Introduce yourself to the customer and start the conversation", lead_info)
+                intro_text = ""
+                try:
+                    async for ai_token in ai_stream:
+                        intro_text += ai_token
+                        logger.debug(f"[FLOW] AI intro partial token for {call_sid}: {ai_token}")
+                except Exception as e:
+                    logger.error(f"[FLOW] Error while streaming AI intro for {call_sid}: {e}")
+                logger.info(f"[FLOW] Finished streaming AI intro for {call_sid}: {intro_text}")
+                logger.info(f"[FLOW] Starting streaming TTS intro for call_sid={call_sid}")
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(intro_text)
+                try:
+                    chunk_count = 0
+                    async for audio_chunk in tts_stream:
+                        chunk_count += 1
+                        if audio_chunk:
+                            logger.debug(f"[FLOW] Sending TTS intro audio chunk {chunk_count} for {call_sid} (size={len(audio_chunk)})")
+                            await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                        else:
+                            logger.warning(f"[FLOW] Received empty TTS intro audio chunk for {call_sid}")
+                    logger.info(f"[FLOW] Finished streaming TTS intro for {call_sid}, total chunks: {chunk_count}")
+                except Exception as e:
+                    logger.error(f"[FLOW] Error while streaming TTS intro for {call_sid}: {e}")
 
             elif event == "media":
                 payload = data.get("media", {}).get("payload")

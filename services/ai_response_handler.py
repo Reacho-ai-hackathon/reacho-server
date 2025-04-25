@@ -32,6 +32,41 @@ class AIResponseHandler:
         self.model = model
         logger.info("AIResponseHandler initialized.")
 
+    async def stream_response(self, transcript, lead_info):
+        """
+        Async generator that yields partial AI responses as soon as they are available (streaming).
+        Uses Gemini's async streaming API (generate_content_async with stream=True).
+        """
+        call_sid = lead_info.get('call_sid', 'unknown')
+        logger.info(f"[AI_STREAM][{call_sid}] Starting streaming AI response for transcript: '{transcript}'")
+        try:
+            context = self._create_context(lead_info)
+            previous_dialogue = self._get_previous_conversation(lead_info, transcript)
+            full_prompt = f"""{context}\n\nHere's the conversation so far:\n{previous_dialogue}\nAI:"""
+            logger.debug(f"[AI_STREAM][{call_sid}] Sending prompt to Gemini (async stream):\n{full_prompt[:1000]}...")
+
+            partial = ""
+            token_count = 0
+            # Use Gemini's async streaming API
+            response_stream = await self.model.generate_content_async(full_prompt, stream=True)
+            async for chunk in response_stream:
+                token = getattr(chunk, 'text', None)
+                if token:
+                    token_count += 1
+                    partial += token
+                    logger.debug(f"[AI_STREAM][{call_sid}] Token {token_count}: {token}")
+                    yield token
+            logger.info(f"[AI_STREAM][{call_sid}] Streaming response complete. Total tokens: {token_count}. Full response: {partial}")
+
+            # Optionally, save the full response to call_states
+            if call_states and call_sid:
+                call_states.setdefault(call_sid, {'transcripts': [], 'responses': []})
+                call_states[call_sid]['responses'].append(partial)
+        except Exception as e:
+            logger.error(f"[AI_STREAM][{call_sid}] Error during streaming response generation: {e}")
+            logger.debug(traceback.format_exc())
+            yield "Sorry, I'm having trouble responding. Let's continue."
+
     async def generate_response(self, transcript, lead_info):
         """Generate an AI response based on the transcript and lead information"""
         call_sid = lead_info.get('call_sid', 'unknown')

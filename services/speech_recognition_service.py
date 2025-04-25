@@ -27,7 +27,7 @@ class SpeechRecognitionService:
         )
 
     async def add_audio(self, call_sid: str, audio_chunk: bytes):
-        logger.debug(f"[{call_sid}] Queued audio chunk of size {len(audio_chunk)}")
+        # logger.debug(f"[{call_sid}] Queued audio chunk of size {len(audio_chunk)}")
         self.audio_queues[call_sid].put(audio_chunk)
 
     async def stop_streaming(self, call_sid: str):
