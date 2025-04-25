@@ -69,7 +69,7 @@ class SpeechRecognitionService:
     def _run_recognizer(self, call_sid: str, transcript_callback, loop):
         try:
             logger.info(f"[{call_sid}] _run_recognizer called")
-            requests = self._audio_generator(call_sid, save_audio=True)
+            requests = self._audio_generator(call_sid, save_audio=False)
             config = self.get_streaming_config()
             logger.info(f"[{call_sid}] requests generator created")
             responses = self.client.streaming_recognize(config=config, requests=requests)

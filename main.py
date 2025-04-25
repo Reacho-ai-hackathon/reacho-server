@@ -139,6 +139,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
     active_connections[call_sid] = websocket
 
     stream_sid = None
+    is_tts_active = False
 
     # Initialize state if not already done
     if call_sid not in call_orchestrator.call_states:
@@ -152,17 +153,26 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
 
     # Transcript callback
     async def on_transcript(transcript: str):
-        logger.info(f"Final transcript for {call_sid}: {transcript}")
+        nonlocal is_tts_active
+        logger.info(f"Transcription received: {transcript}")
+
+        # If there is ongoing TTS, send the "clear" event to stop it
+        if is_tts_active:
+            await barge_in(websocket, stream_sid)
+            logger.info("Sent clear event to stop ongoing TTS.")
+            is_tts_active = False  # Reset TTS flag
+
+        # Process transcription immediately
         call_orchestrator.call_states[call_sid]["transcript"] += " " + transcript
         await call_orchestrator.data_logger.log_transcript(call_sid, transcript, True)
 
         lead_info = call_orchestrator.call_states[call_sid]["lead_info"]
         ai_response = await call_orchestrator.ai_handler.generate_response(transcript, lead_info)
-        await call_orchestrator.data_logger.log_ai_response(call_sid, ai_response)
 
+        # Start TTS for AI response
         audio_data = await call_orchestrator.tts_service.text_to_speech(ai_response)
         if audio_data:
-            # await barge_in(websocket, stream_sid)
+            is_tts_active = True
             await send_audio_to_twilio(websocket, audio_data, stream_sid)
 
     # Start STT streaming task
