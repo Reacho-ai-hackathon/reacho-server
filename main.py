@@ -62,13 +62,36 @@ async def index():
     logger.info("Root endpoint accessed")
     return "Reacho Outbound Voice AI System (FastAPI)"
 
+from fastapi import Form
+import json
+from storage.models import CampaignCreate
+
+
+
 @app.post("/upload_csv")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(
+    file: UploadFile = File(...),
+    campaign_info: str = Form(...)
+):
     logger.info(f"CSV upload requested: {file.filename}")
     
     if not file.filename.endswith(".csv"):
         logger.warning(f"Invalid file type uploaded: {file.filename}")
         return JSONResponse({"status": "error", "message": "Only CSV files are accepted."}, status_code=400)
+    
+    # Parse campaign_info JSON string
+    try:
+        campaign_data = json.loads(campaign_info)
+        campaign_create = CampaignCreate(**campaign_data)
+        logger.info(f"Parsed campaign info: {campaign_create}")
+        asyncio.create_task(call_orchestrator.campaign_crud.create(campaign_create))
+        logger.info(f"Created campaign: {campaign_create.name} with ID: {campaign_create.description}")
+    except Exception as e:
+        logger.error(f"Failed to create campaign: {e}")
+        return JSONResponse({"status": "error", "message": f"Invalid campaign info: {e}"}, status_code=400)
+
+
+    logger.info("Starting call processing synchronously")
     
     temp_dir = "temp_csv"
     os.makedirs(temp_dir, exist_ok=True)
