@@ -84,7 +84,7 @@ class CallOrchestrator:
                         designation=row["designation"],
                     )
                     logger.info(f"Creating user: {user_data}")
-                    await self.user_crud.create(user_data)
+                    asyncio.create_task( self.user_crud.create(user_data))
                     logger.info(f"Creating user: {user_data}")
                     count += 1
             logger.info(f"Successfully processed CSV and queued {count} calls")
