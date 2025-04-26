@@ -330,15 +330,26 @@ async def startup():
     os.makedirs('logs', exist_ok=True)
     os.makedirs('temp_csv', exist_ok=True)
     
+    # Initialize MongoDB connection
+    from storage.db_config import init_db
+    await init_db()
+    logger.info("MongoDB connection initialized")
+    
     # Set up references between components
     from services.ai_response_handler import set_call_states_ref
     set_call_states_ref(call_states)
     
     logger.info("Application startup complete")
 
+
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("Application shutting down")
+    
+    # Close MongoDB connection
+    from storage.db_config import close_mongo_connection
+    await close_mongo_connection()
+    logger.info("MongoDB connection closed")
     # Close any active connections
     for call_sid, websocket in active_connections.items():
         try:
