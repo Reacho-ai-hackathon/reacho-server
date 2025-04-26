@@ -42,7 +42,7 @@ async def migrate_users():
                 # Convert old user to new user model
                 user_data = {
                     "name": old_user.get("name", ""),
-                    "phone_number": old_user.get("phone_number", 0),
+                    "phno": old_user.get("phno", 0),
                     "company": old_user.get("company", ""),
                     "product_interest": old_user.get("product_interest", "")
                 }

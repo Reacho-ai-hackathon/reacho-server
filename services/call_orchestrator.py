@@ -1,16 +1,44 @@
+from ast import Call
 import threading
 import asyncio
 import logging
 import aiofiles
 from datetime import datetime
+
+from storage.db_utils import CRUDBase
+from storage.models.call_metadata import CallMetadata
+from storage.models.campaign import Campaign
+from storage.models.user import User, UserCreate
 from .voice_call_service import VoiceCallService
 from .speech_recognition_service import SpeechRecognitionService
 from .ai_response_handler import AIResponseHandler
 from .text_to_speech_service import TextToSpeechService
 from .data_logging_service import DataLoggingService
+# from storage.models import User, UserCreate, UserUpdate, Campaign, CampaignCreate, CampaignUpdate, Call, CallCreate, CallUpdate, CallMetadata, CallMetadataCreate, CallMetadataUpdate
+# from storage.db_utils import CRUDBase
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+
+
+# Initialising core DB components
+class UserCRUD(CRUDBase[User]):
+    def __init__(self):
+        super().__init__(User, "users")
+
+class CampaignCRUD(CRUDBase[Campaign]):
+    def __init__(self):
+        super().__init__(Campaign, "campaigns")
+
+class CallCRUD(CRUDBase[Call]):
+    def __init__(self):
+        super().__init__(Call, "calls")
+
+
+class CallMetadataCRUD(CRUDBase[CallMetadata]):
+    def __init__(self):
+        super().__init__(CallMetadata, "call_metadata")
 
 class CallOrchestrator:
     """Manages the state of each call and coordinates the flow between services"""
@@ -25,6 +53,10 @@ class CallOrchestrator:
         self.tts_service = TextToSpeechService()
         self.data_logger = DataLoggingService()
         self._processing_task = None
+        self.user_crud = UserCRUD()
+        self.campaign_crud = CampaignCRUD()
+        self.call_crud = CallCRUD()
+        self.call_metadata_crud = CallMetadataCRUD()
         logger.info("CallOrchestrator initialized successfully")
 
     async def process_csv(self, csv_file_path):
@@ -35,11 +67,25 @@ class CallOrchestrator:
                 csv_reader = csv.DictReader(file)
                 count = 0
                 for row in csv_reader:
-                    if 'phone_number' not in row:
-                        logger.warning(f"Skipping row without phone_number: {row}")
+                    if 'phno' not in row:
+                        logger.warning(f"Skipping row without phno: {row}")
                         continue
-                    logger.debug(f"Queueing call to: {row['phone_number']}")
-                    self.call_queue.put(row)
+                    logger.debug(f"Queueing call to: {row['phno']}")
+                    self.call_queue.put(row);
+                    logger.debug(f"Total row info: {row["name"]}")
+
+                    user_data = UserCreate(
+                        name=row["name"],
+                        age=row["age"],
+                        gender=row["gender"],
+                        phno=row["phno"],
+                        email=row["email"],
+                        organisation=row["organisation"],
+                        designation=row["designation"],
+                    )
+                    logger.info(f"Creating user: {user_data}")
+                    await self.user_crud.create(user_data)
+                    logger.info(f"Creating user: {user_data}")
                     count += 1
             logger.info(f"Successfully processed CSV and queued {count} calls")
             return {"status": "success", "message": f"Processed CSV and queued {count} calls"}
@@ -62,7 +108,7 @@ class CallOrchestrator:
                 queue_size = self.call_queue.qsize()
                 logger.info(f"Processing next call from queue (remaining: {queue_size})")
                 lead_info = self.call_queue.get()
-                logger.info(f"Initiating call to: {lead_info.get('phone_number')}")
+                logger.info(f"Initiating call to: {lead_info.get('phno')}")
                 try:
                     call_sid = await self.voice_service.make_call(lead_info)
                     logger.info(f"Call initiated successfully with SID: {call_sid}")

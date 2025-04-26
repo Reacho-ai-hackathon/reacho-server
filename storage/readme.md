@@ -8,7 +8,7 @@ This directory contains the core storage logic for MongoDB integration using Mot
   - `PyObjectId`: Custom ObjectId type for Pydantic validation.
   - `MongoModel`: Base model for MongoDB documents with automatic ID handling.
   - `CRUDBase`: Generic async CRUD operations (create, get, update, delete, find) for any Pydantic model.
-- **models.py**: Pydantic models representing MongoDB schemas for your domain (e.g., User, CallLog). Includes creation, update, and full document models.
+- **models.py**: Pydantic models representing MongoDB schemas for your domain (e.g., User, CallLog, Campaign, Call, CallMetadata). Includes creation, update, and full document models. All models are now organized in the `models/` package and imported in `models.py` for backward compatibility.
 - **db_example.py**: Example script demonstrating how to use the CRUD utilities and models for typical operations (create, get, update, list, find, delete users).
 
 ## Setup & Requirements
@@ -20,15 +20,22 @@ This directory contains the core storage logic for MongoDB integration using Mot
 
 ### 1. Define Your Models
 
-Create Pydantic models for your MongoDB collections in `models.py`. Inherit from `MongoModel` for full documents, and use standard Pydantic models for creation/update schemas.
+Create Pydantic models for your MongoDB collections in the `models/` directory. Inherit from `MongoModel` for full documents, and use standard Pydantic models for creation/update schemas. All models are exported via `models/__init__.py` and re-exported in `models.py` for easy import.
 
 Example:
 
 ```python
-class User(MongoModel, UserBase):
-    expiry_date: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+from storage.models import User
+
+user = User(
+    name="John Doe",
+    age=30,
+    gender="male",
+    phno="9381273567",
+    email="john@example.com",
+    organisation="Example Corp",
+    designation="Engineer"
+)
 ```
 
 ### 2. Create a CRUD Handler
@@ -36,57 +43,43 @@ class User(MongoModel, UserBase):
 Subclass `CRUDBase` for your model and specify the collection name:
 
 ```python
-from db_utils import CRUDBase
-from models import User
+from storage.db_utils import CRUDBase
+from storage.models import User
 
 class UserCRUD(CRUDBase[User]):
     def __init__(self):
         super().__init__(User, "users")
+
+user_crud = UserCRUD()
 ```
 
 ### 3. Perform CRUD Operations
 
-All operations are async. Example usage:
+Use the CRUD handler to perform async operations:
 
 ```python
-user_crud = UserCRUD()
-
 # Create a user
-user = await user_crud.create(UserCreate(...))
+user_data = UserCreate(name="Jane", ...)
+user = await user_crud.create(user_data)
 
-# Get a user by ID
+# Get a user
 user = await user_crud.get(user_id)
 
 # Update a user
-updated_user = await user_crud.update(user_id, UserUpdate(...))
-
-# Delete a user
-success = await user_crud.delete(user_id)
+update_data = UserUpdate(email="new@example.com")
+updated_user = await user_crud.update(user_id, update_data)
 
 # List users
 users = await user_crud.get_multi(skip=0, limit=10)
 
-# Find users by query
-users = await user_crud.find_many({"company": "Example Corp"})
+# Delete a user
+await user_crud.delete(user_id)
 ```
 
-### 4. Example Script
+### 4. Example Integration
 
-See `db_example.py` for a full workflow, including DB initialization and teardown.
-
-## Integration Points
-
-- Import your CRUD handler and models wherever you need database access in your app.
-- Use the async CRUD methods for all DB operations.
-- Extend models and CRUD logic as needed for new collections or business logic.
-
-## Notes
-
-- All timestamps (`created_at`, `updated_at`) are handled automatically in CRUDBase.
-- ObjectId fields are validated and serialized for API compatibility.
-- You can add more models and CRUD handlers following the same pattern.
+See `db_example.py` for a complete, runnable example covering all CRUD operations and integration patterns. You can adapt these patterns in your main application files (e.g., `main.py`, `call_orchestrator.py`).
 
 ---
 
-**This storage layer is designed for scalability and maintainability.**
-If you add new collections or models, define them in `models.py` and create a corresponding CRUD handler using `CRUDBase`.
+For more details, refer to the docstrings in each model and utility file. All models are validated using Pydantic and support MongoDB's ObjectId via the custom `PyObjectId` type.

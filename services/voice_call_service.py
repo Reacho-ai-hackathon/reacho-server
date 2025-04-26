@@ -17,7 +17,7 @@ class VoiceCallService:
             raise ValueError("Missing Twilio credentials")
 
         self.client = Client(account_sid, auth_token)
-        self.from_number = os.getenv('TWILIO_PHONE_NUMBER')
+        self.from_number = os.getenv('TWILIO_phno')
         ngrok_url = os.getenv('NGROK_URL', 'https://f9d7-2405-201-c01e-404e-a4ec-ca60-86bd-e8ce.ngrok-free.app')
         self.callback_url = f"{ngrok_url}/outbound_call"
         self.status_callback = f"{ngrok_url}/call_status"
@@ -27,10 +27,10 @@ class VoiceCallService:
         logger.info(f"Status callback URL: {self.status_callback}")
 
     async def make_call(self, lead_info):
-        logger.info(f"Making call to {lead_info['phone_number']}")
+        logger.info(f"Making call to {lead_info['phno']}")
         try:
             call = self.client.calls.create(
-                to=lead_info['phone_number'],
+                to=lead_info['phno'],
                 from_=self.from_number,
                 url=self.callback_url,
                 status_callback=self.status_callback,
@@ -40,7 +40,7 @@ class VoiceCallService:
             logger.info(f"Call initiated successfully with SID: {call.sid}")
             return call.sid
         except Exception as e:
-            logger.error(f"Error making call to {lead_info['phone_number']}: {e}", exc_info=True)
+            logger.error(f"Error making call to {lead_info['phno']}: {e}", exc_info=True)
             raise
 
     async def end_call(self, call_sid):

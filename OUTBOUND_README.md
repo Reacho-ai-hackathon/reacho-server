@@ -49,7 +49,7 @@ The system follows a modular architecture with the following components:
 5. Make sure to add your Twilio phone number to the `.env` file:
 
    ```
-   TWILIO_PHONE_NUMBER=your_twilio_phone_number
+   TWILIO_phno=your_twilio_phno
    ```
 
 ## Running the Application
@@ -65,7 +65,7 @@ The application will start on http://localhost:5000
 
 ### Uploading Lead Information
 
-1. Prepare a CSV file with lead information. The CSV must include at least a `phone_number` column. Other recommended columns include:
+1. Prepare a CSV file with lead information. The CSV must include at least a `phno` column. Other recommended columns include:
 
    - `name`: Customer's name
    - `company`: Customer's company

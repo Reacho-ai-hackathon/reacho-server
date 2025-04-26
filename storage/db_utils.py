@@ -8,8 +8,7 @@ from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
 from datetime import datetime
-
-from db_config import get_database
+from storage.db_config import get_database
 
 # Type variable for generic model operations
 ModelType = TypeVar('ModelType', bound=BaseModel)

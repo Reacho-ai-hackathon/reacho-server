@@ -14,6 +14,7 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Gather
 from services.call_orchestrator import CallOrchestrator
 from dotenv import load_dotenv
+from storage.db_config import init_db
 
 load_dotenv()
 
@@ -88,7 +89,7 @@ async def upload_csv(file: UploadFile = File(...)):
     logger.info(f"CSV processing result: {result}")
 
     logger.info("Starting call processing synchronously")
-    call_orchestrator.start_call_processing()  # Now synchronous
+    # call_orchestrator.start_call_processing()  # Now synchronous
 
     logger.info("CSV upload and processing completed successfully")
     return {"status": "success", "message": "File uploaded and processing completed."}
@@ -375,3 +376,5 @@ if __name__ == "__main__":
     os.makedirs('temp_csv', exist_ok=True)
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8555)))
+    print("initiating dB")
+    asyncio.run(init_db())

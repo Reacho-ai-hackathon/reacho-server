@@ -16,16 +16,16 @@ class UserRepository(CRUDBase[User]):
     def __init__(self):
         super().__init__(User, "users")
     
-    async def find_by_phone(self, phone_number: int) -> Optional[User]:
+    async def find_by_phone(self, phno: int) -> Optional[User]:
         """Find a user by phone number.
         
         Args:
-            phone_number: The phone number to search for
+            phno: The phone number to search for
             
         Returns:
             The user if found, None otherwise
         """
-        return await self.find_one({"phone_number": phone_number})
+        return await self.find_one({"phno": phno})
     
     async def find_by_company(self, company: str) -> List[User]:
         """Find users by company name.

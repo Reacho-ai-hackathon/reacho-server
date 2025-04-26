@@ -1,2 +1,3 @@
-name,phone_number,company,product_interest
-Dinesh,+919381273567,Tilicho Labs,Cloud Services
+name,age,gender,phno,email,organisation,designation
+Dinesh,24,male,+919381273567,dineshbau5599,Tilicho Labs,Cloud Services
+Vijay,25,male,+919221273567,dineshbau5599asds,Eleven Labs,Compute Services
