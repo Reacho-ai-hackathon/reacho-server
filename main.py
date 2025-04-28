@@ -3,7 +3,7 @@ import json
 import uuid
 import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from queue import Queue
 from fastapi import FastAPI, WebSocket, Request, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
@@ -14,7 +14,10 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Gather
 from services.call_orchestrator import CallOrchestrator
 from dotenv import load_dotenv
+from services.utils import get_embedding
 from storage.db_config import init_db
+from storage.models import User, UserCreate, UserUpdate, Campaign, CampaignCreate, CampaignUpdate, Call, CallCreate, CallUpdate, CallMetadata, CallMetadataCreate, CallMetadataUpdate
+from storage.models.call_metadata import CallChunk
 
 load_dotenv()
 
@@ -24,7 +27,7 @@ import os
 
 # Add this at the beginning of your file
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -84,8 +87,9 @@ async def upload_csv(
         campaign_data = json.loads(campaign_info)
         campaign_create = CampaignCreate(**campaign_data)
         logger.info(f"Parsed campaign info: {campaign_create}")
-        asyncio.create_task(call_orchestrator.campaign_crud.create(campaign_create))
-        logger.info(f"Created campaign: {campaign_create.name} with ID: {campaign_create.description}")
+        newly_created_campaign_task = asyncio.create_task(call_orchestrator.campaign_crud.create(campaign_create))
+        campaign = await newly_created_campaign_task
+        logger.info(f"Created campaign: {campaign} with ID: {campaign}")
     except Exception as e:
         logger.error(f"Failed to create campaign: {e}")
         return JSONResponse({"status": "error", "message": f"Invalid campaign info: {e}"}, status_code=400)
@@ -108,11 +112,11 @@ async def upload_csv(
 
     # Process CSV and then start call processing directly
     logger.info(f"Processing CSV file: {file_path}")
-    result = await call_orchestrator.process_csv(file_path)
+    result = await call_orchestrator.process_csv(file_path, campaign.id)
     logger.info(f"CSV processing result: {result}")
 
     logger.info("Starting call processing synchronously")
-    # call_orchestrator.start_call_processing()  # Now synchronous
+    await call_orchestrator.start_call_processing()  # Now synchronous
 
     logger.info("CSV upload and processing completed successfully")
     return {"status": "success", "message": "File uploaded and processing completed."}
@@ -137,8 +141,6 @@ async def outbound_call(request: Request):
 
     return Response(content=str(response), media_type="text/xml")
 
-
-
 @app.post("/call_status")
 async def call_status(request: Request):
     form = await request.form()
@@ -158,6 +160,19 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         await websocket.close(1000, "Duplicate connection")
         return
 
+    # Fetch call record from DB
+    call_record = None
+    try:
+        call_record = await call_orchestrator.call_crud.find_one({"call_sid": call_sid})
+        # if call_record:
+        #     logger.info(f"Fetched call record from DB: {call_record}")
+        #     # Update status to 'connected' in DB
+        #     await call_orchestrator.call_crud.update(call_record.id, {"status": "connected"})
+        # else:
+        #     logger.warning(f"No call record found in DB for call_sid: {call_sid}")
+    except Exception as e:
+        logger.error(f"Error fetching/updating call record at connect for {call_sid}: {e}")
+
     await websocket.accept()
     logger.info(f"WebSocket accepted for call_sid: {call_sid}")
     active_connections[call_sid] = websocket
@@ -176,7 +191,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         }
 
     # Transcript callback
-    async def on_transcript(transcript: str):
+    async def on_transcript(transcript: str, transcript_embedding):
         nonlocal is_tts_active
         logger.info(f"[FLOW] Transcription received: {transcript}")
 
@@ -192,14 +207,25 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         await call_orchestrator.data_logger.log_transcript(call_sid, transcript, True)
 
         lead_info = call_orchestrator.call_states[call_sid]["lead_info"]
+        # Add transcript chunk to call metadata
+        user_chunk = CallChunk(
+            timestamp=datetime.now(timezone.utc),
+            role="USER",
+            content=transcript,
+            vector=transcript_embedding.get("embedding") if transcript_embedding else None
+        )
+        await call_orchestrator.call_metadata_crud.append_chunk(call_id=call_record.id, chunk=user_chunk)
+
         logger.info(f"[FLOW] Starting streaming AI response for call_sid={call_sid}")
         ai_stream = call_orchestrator.ai_handler.stream_response(transcript, lead_info)
         logger.info(f"[FLOW] Real-time streaming: AI tokens to TTS for call_sid={call_sid}")
         buffer = ""
         is_tts_active = True
+        ai_response_full = ""
         try:
             async for ai_token in ai_stream:
                 buffer += ai_token
+                ai_response_full += ai_token
                 logger.debug(f"[FLOW] AI partial token for {call_sid}: {ai_token}")
                 # Buffer until a sentence or chunk is ready for TTS
                 if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
@@ -226,6 +252,14 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                     else:
                         logger.warning(f"[FLOW] Received empty TTS audio chunk for {call_sid}")
                 logger.info(f"[FLOW] TTS streamed for final buffer (size={len(buffer)}): {buffer}")
+            # Add AI response chunk to call metadata
+            assistant_chunk = CallChunk(
+                timestamp=datetime.now(timezone.utc),
+                role="ASSISTANT",
+                content=ai_response_full,
+                vector=transcript_embedding.get('embedding') or None
+            )
+            await call_orchestrator.call_metadata_crud.append_chunk(call_id=call_record.id, chunk=assistant_chunk)
         except Exception as e:
             logger.error(f"[FLOW] Error during real-time AI->TTS streaming for {call_sid}: {e}")
         logger.info(f"[FLOW] Finished real-time streaming AI->TTS for {call_sid}")
@@ -241,6 +275,9 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
             event = data.get("event")
 
             if event == "connected":
+                update_kwargs = {"stream_sid": stream_sid}
+                update_data = CallUpdate(**update_kwargs)
+                await call_orchestrator.call_crud.update(str(call_record.id), update_data)
                 logger.info(f"WebSocket connected for {call_sid}")
 
             elif event == "start":
@@ -249,7 +286,29 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
                 # Use streaming for intro as well
                 logger.info(f"[FLOW] Starting streaming AI intro for call_sid={call_sid}")
-                ai_stream = call_orchestrator.ai_handler.stream_response("Introduce yourself to the customer and start the conversation", lead_info)
+                system_prompt = "Introduce yourself to the customer and start the conversation by explaining about the product"
+                try:
+                    if call_record:
+                        chunk = CallChunk(
+                            timestamp=datetime.now(timezone.utc),
+                            role="SYSTEM",
+                            content=system_prompt,
+                            vector=[]
+                        )
+                        meta_create = CallMetadataCreate(
+                            call_id=call_record.id,
+                            summary="",
+                            chunks=[chunk]
+                        )
+                        await call_orchestrator.call_metadata_crud.create(meta_create)
+                        logger.info(f"[FLOW] Created CallMetadata with SYSTEM chunk for call_sid={call_sid}")
+                    else:
+                        logger.warning(f"[FLOW] Cannot create CallMetadata: call_record is None for call_sid={call_sid}")
+                except Exception as e:
+                    logger.error(f"[FLOW] Error creating CallMetadata for call_sid={call_sid}: {e}\n{traceback.format_exc()}")
+                # --- End CallMetadata creation ---
+
+                ai_stream = call_orchestrator.ai_handler.stream_response(system_prompt, lead_info)
                 intro_text = ""
                 try:
                     async for ai_token in ai_stream:
@@ -272,6 +331,15 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                     logger.info(f"[FLOW] Finished streaming TTS intro for {call_sid}, total chunks: {chunk_count}")
                 except Exception as e:
                     logger.error(f"[FLOW] Error while streaming TTS intro for {call_sid}: {e}")
+                # need to add intro text to the chunks in call_metadata
+                intro_embedding = get_embedding(intro_text)
+                assistant_chunk = CallChunk(
+                    timestamp=datetime.now(timezone.utc),
+                    role="ASSISTANT",
+                    content=intro_text,
+                    vector=intro_embedding.get('embedding') or None
+                )
+                await call_orchestrator.call_metadata_crud.append_chunk(call_id=call_record.id, chunk=assistant_chunk)
 
             elif event == "media":
                 payload = data.get("media", {}).get("payload")

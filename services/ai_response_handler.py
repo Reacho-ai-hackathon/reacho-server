@@ -3,6 +3,10 @@ import google.generativeai as genai
 import os
 import logging
 import traceback
+from storage.db_config import get_database
+import dotenv
+
+dotenv.load_dotenv()
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -40,6 +44,13 @@ class AIResponseHandler:
         call_sid = lead_info.get('call_sid', 'unknown')
         logger.info(f"[AI_STREAM][{call_sid}] Starting streaming AI response for transcript: '{transcript}'")
         try:
+            transcript_embedding = genai.embed_content(
+                content=transcript,
+                model="text-embedding-004",
+                title="transcript",
+                output_dimensionality=768,
+                task_type="RETRIEVAL_DOCUMENT"
+            )
             context = self._create_context(lead_info)
             previous_dialogue = self._get_previous_conversation(lead_info, transcript)
             full_prompt = f"""{context}\n\nHere's the conversation so far:\n{previous_dialogue}\nAI:"""
@@ -49,6 +60,7 @@ class AIResponseHandler:
             token_count = 0
             # Use Gemini's async streaming API
             response_stream = await self.model.generate_content_async(full_prompt, stream=True)
+            logger.info(f"[AI_STREAM][{call_sid}] Embedded transcript: {transcript_embedding.get('embedding')}")
             async for chunk in response_stream:
                 token = getattr(chunk, 'text', None)
                 if token:

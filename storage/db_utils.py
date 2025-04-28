@@ -7,7 +7,7 @@ from typing import List, Dict, Any, TypeVar, Generic, Type, Optional, Union
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorCollection
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone
 from storage.db_config import get_database
 
 # Type variable for generic model operations
@@ -78,26 +78,18 @@ class CRUDBase(Generic[ModelType]):
         Returns:
             The created object as a Pydantic model
         """
+
         if isinstance(obj_in, dict):
-            obj_data = obj_in
+            obj_data = obj_in.copy()
         else:
-            obj_data = obj_in.dict(exclude_unset=True)
-            
-        # Add creation timestamp
-        obj_data['created_at'] = datetime.utcnow()
+            obj_data = obj_in.model_dump(exclude_unset=True)
+        obj_data['created_at'] = datetime.now(timezone.utc)
         obj_data['updated_at'] = obj_data['created_at']
-        
+
         collection = await self.get_collection()
         result = await collection.insert_one(obj_data)
-        
-        # Get the created document
-        created_doc = await collection.find_one({'_id': result.inserted_id})
-        
-        # Convert _id to id for the model
-        if created_doc and '_id' in created_doc:
-            created_doc['id'] = created_doc.pop('_id')
-            
-        return self.model(**created_doc)
+        obj_data['_id'] = result.inserted_id
+        return self.model(**obj_data)
     
     async def get(self, id: str) -> Optional[ModelType]:
         """Get a document by ID.
@@ -164,7 +156,7 @@ class CRUDBase(Generic[ModelType]):
             del update_data['id']
             
         # Add update timestamp
-        update_data['updated_at'] = datetime.utcnow()
+        update_data['updated_at'] = datetime.now(timezone.utc)
         
         await collection.update_one(
             {'_id': ObjectId(id)},

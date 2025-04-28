@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from google.cloud import speech
 import asyncio
+from services.utils import get_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ class SpeechRecognitionService:
                         try:
                             if not transcript:
                                 continue
+                            transcript_embedding = get_embedding(transcript)
                             # Schedule the async callback in the provided event loop
-                            future = asyncio.run_coroutine_threadsafe(transcript_callback(transcript), loop)
+                            future = asyncio.run_coroutine_threadsafe(transcript_callback(transcript, transcript_embedding), loop)
                             logger.info(f"[{call_sid}] Transcript callback scheduled")
                             result = future.result(timeout=10)
                             logger.info(f"[{call_sid}] Transcript callback completed")

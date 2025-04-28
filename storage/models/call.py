@@ -10,7 +10,7 @@ from storage.db_utils import MongoModel, PyObjectId
 
 
 # Define call status type
-CallStatus = Literal["initiated", "ringing", "in-progress", "completed", "failed", "busy", "no-answer"]
+CallStatus = Literal["initiated", "ringing", "in-progress", "completed", "failed", "busy", "no-answer", "canceled"]
 
 
 class CallBase(BaseModel):
@@ -40,6 +40,7 @@ class CallUpdate(BaseModel):
 
 class Call(MongoModel, CallBase):
     """Complete Call model with MongoDB ID and timestamps."""
+    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
 

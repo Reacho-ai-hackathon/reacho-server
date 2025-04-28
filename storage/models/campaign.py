@@ -6,7 +6,7 @@ This module defines the Pydantic models that represent the Campaign document sch
 from typing import Optional, Literal
 from datetime import datetime
 from pydantic import BaseModel
-from storage.db_utils import MongoModel
+from storage.db_utils import MongoModel, PyObjectId
 
 
 # Define campaign status type
@@ -36,8 +36,12 @@ class CampaignUpdate(BaseModel):
     end_date: Optional[datetime] = None
 
 
+from pydantic import Field
+from typing import Optional
+
 class Campaign(MongoModel, CampaignBase):
     """Complete Campaign model with MongoDB ID and timestamps."""
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
