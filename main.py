@@ -415,6 +415,54 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/dashboard")
+async def get_dashboard_data():
+    """
+    Fetch data for the dashboard, including users, calls, and campaigns.
+    """
+    try:
+        logger.info("Fetching dashboard data")
+        users = await call_orchestrator.user_crud.get_multi()
+        logger.info(f"Fetched {len(users)} users")
+        calls = await call_orchestrator.call_crud.get_multi()
+        logger.info(f"Fetched {len(calls)} calls")
+        campaigns = await call_orchestrator.campaign_crud.get_multi()
+        logger.info(f"Fetched {len(campaigns)} campaigns")
+
+        from bson import ObjectId
+
+        def clean_mongo(obj):
+            if isinstance(obj, dict):
+                return {k: clean_mongo(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_mongo(i) for i in obj]
+            elif isinstance(obj, ObjectId):
+                return str(obj)
+            elif isinstance(obj, datetime):
+                return obj.isoformat()
+            return obj
+
+        sorted_calls = sorted(
+            calls,
+            key=lambda call: getattr(call, "call_start_time", None) or getattr(call, "created_at", None),
+            reverse=True
+        )   
+        response = {
+            "users": [clean_mongo(user.model_dump(exclude_unset=True, exclude={"related_field"})) for user in users],
+            "calls": [clean_mongo(call.model_dump(exclude_unset=True, exclude={"related_field"})) for call in sorted_calls],
+            "campaigns": [clean_mongo(campaign.model_dump(exclude_unset=True, exclude={"related_field"})) for campaign in campaigns],
+        }
+
+        return JSONResponse(content=response, status_code=200)
+
+    except Exception as e:
+        logger.error(f"Error fetching dashboard data: {e}", exc_info=True)
+        return JSONResponse(
+            content={"status": "error", "message": "Failed to fetch dashboard data."},
+            status_code=500,
+        )
+
+
 @app.on_event("startup")
 async def startup():
     logger.info("Application starting up")
