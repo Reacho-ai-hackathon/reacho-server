@@ -93,8 +93,11 @@ class TextToSpeechService:
             logger.debug("Calling Google TTS API")
             input_text = texttospeech.SynthesisInput(text=text)
             voice = texttospeech.VoiceSelectionParams(
-                language_code="en-US",
-                name="en-US-Chirp-HD-F",  # You can dynamically adjust this
+                # language_code="en-US",
+                # name="en-US-Chirp-HD-F",  # You can dynamically adjust this
+
+                language_code="en-IN",
+                name="en-IN-Chirp3-HD-Erinome",  # You can dynamically adjust this
                 ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,  # Adjust gender dynamically as needed
             )
 

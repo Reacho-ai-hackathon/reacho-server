@@ -7,6 +7,7 @@ from storage.db_config import get_database
 import dotenv
 from storage.db_utils import CRUDBase
 from storage.models.campaign import Campaign
+import re
 
 
 dotenv.load_dotenv()
@@ -42,40 +43,65 @@ class AIResponseHandler:
     def __init__(self):
         self.model = model
         self.campaign_crud = CampaignCRUD()
+        # Define a regex pattern to match unwanted standalone tokens (e.g., punctuation marks)
+        self.unwanted_pattern = r'^[\W_]+$'  # Matches tokens that consist of only punctuation or symbols (non-word characters)
         logger.info("AIResponseHandler initialized.")
 
-    async def stream_response(self, transcript, lead_info):
+    async def stream_response(self, transcript, lead_info, role: str = "user"):
         """
         Async generator that yields partial AI responses as soon as they are available (streaming).
         Uses Gemini's async streaming API (generate_content_async with stream=True).
+        The 'role' parameter determines the context: 'user' uses full history, 'followup' sends only the follow-up prompt.
         """
         call_sid = lead_info.get('call_sid', 'unknown')
-        logger.info(f"[AI_STREAM][{call_sid}] Starting streaming AI response for transcript: '{transcript}'")
+        logger.info(f"[AI_STREAM][{call_sid}] Starting streaming AI response for transcript: '{transcript}' (role={role})")
         try:
-            transcript_embedding = genai.embed_content(
-                content=transcript,
-                model="text-embedding-004",
-                title="transcript",
-                output_dimensionality=768,
-                task_type="RETRIEVAL_DOCUMENT"
-            )
-            context = self._create_context(lead_info)
-            previous_dialogue = self._get_previous_conversation(lead_info, transcript)
-            full_prompt = f"""{context}\n\nHere's the conversation so far:\n{previous_dialogue}\nAI:"""
-            logger.debug(f"[AI_STREAM][{call_sid}] Sending prompt to Gemini (async stream):\n{full_prompt[:1000]}...")
+            # Build prompt/context based on role
+            if role == "followup":
+                # Only send the follow-up prompt as context
+                prompt = transcript + f"\n{lead_info['name']}" if 'name' in lead_info else transcript
+            else:
+                # Use full conversation history/context
+                context = self._create_context(lead_info)
+                previous_dialogue = self._get_previous_conversation(lead_info, transcript)
+                prompt = f"""{context}\n\nHere's the conversation so far:\n{previous_dialogue}\nAI:"""
+
+            # transcript_embedding = genai.embed_content(
+            #     content=transcript,
+            #     model="text-embedding-004",
+            #     title="transcript",
+            #     output_dimensionality=768,
+            #     task_type="RETRIEVAL_DOCUMENT"
+            # )
+            # logger.debug(f"[AI_STREAM][{call_sid}] Embedded transcript: {transcript_embedding.get('embedding')}")
 
             partial = ""
             token_count = 0
-            # Use Gemini's async streaming API
-            response_stream = await self.model.generate_content_async(full_prompt, stream=True)
-            logger.info(f"[AI_STREAM][{call_sid}] Embedded transcript: {transcript_embedding.get('embedding')}")
+            response_stream = await self.model.generate_content_async(prompt, stream=True)
             async for chunk in response_stream:
                 token = getattr(chunk, 'text', None)
-                if token:
+
+                # Skip tokens that are empty, contain only unwanted characters, or are just whitespace
+                # Additionally, allow punctuation when it's part of a sentence (surrounded by letters or numbers)
+                if token and not token.isspace():
+                    # If the token is only punctuation or symbols (standalone), skip it
+                    if re.match(self.unwanted_pattern, token) and len(token) == 1:
+                        # If token is a single character and matches unwanted pattern, skip it
+                        logger.debug(f"[AI_STREAM][{call_sid}] Skipping standalone invalid token: {token}")
+                        continue
+                    
                     token_count += 1
                     partial += token
+                    
+                    # Log the valid token
                     logger.debug(f"[AI_STREAM][{call_sid}] Token {token_count}: {token}")
+                    
+                    # Yield the valid token
                     yield token
+                else:
+                    # Log if a token is being skipped (optional)
+                    logger.debug(f"[AI_STREAM][{call_sid}] Skipping empty or invalid token: {token}")
+
             logger.info(f"[AI_STREAM][{call_sid}] Streaming response complete. Total tokens: {token_count}. Full response: {partial}")
 
             # Optionally, save the full response to call_states
@@ -161,13 +187,10 @@ AI:"""
 
         history.append(f"Customer: {latest_input}")
         conversation = "\n".join(history)  # Limit to last 5 exchanges
-        # conversation = "\n".join(history[-5:])  # Limit to last 5 exchanges
         logger.debug(f"[{call_sid}] Conversation history:\n{conversation}")
         return conversation
 
     def _create_context(self, lead_info):
-        # name,age,gender,phno,email,organisation,designation
-        # campaign = await self.campaign_crud.get(id=lead_info['campaign_id'])
         campaign=lead_info.get('campaign', {})
         logger.info(f"campaign info :{campaign}")
         campaign_name = campaign.name
@@ -181,23 +204,21 @@ AI:"""
         email = lead_info.get('email', '')
         organisation = lead_info.get('organisation', '')
         designation = lead_info.get('designation', '')
-        use_case = lead_info.get('use_case', 'lead_qualification')  # e.g. 'event_reminder', 'feedback', etc.
 
         base_intro = "You are Reacho, a friendly, helpful, and intelligent AI voice assistant making smart outbound calls"
 
         instructions_common = """
 General Guidelines:
-- Speak in a natural, conversational tone. Keep it warm and human-like.
-- Use 1-2 short, clear sentences per reply. Avoid sounding robotic or overly scripted.
+- Keep all replies short and crisp — no more than 1-2 short sentences.
+- Speak in a friendly, conversational tone without sounding robotic or overly formal.
 - Adapt to the user's tone and language.
 - Ask questions only when appropriate and helpful.
 - Be kind, especially if the person seems disinterested or confused.
 - If the person asks you to stop, end the conversation politely and do not continue.
+- Do not perform any bookings or make promises
 """
 
-        # Context depending on use case
-        if use_case == 'lead_qualification':
-            context = f"""{base_intro}
+        context = f"""{base_intro}
         You're speaking with {name}, a potential lead. Here's what we know about them:
         - Name: {name}
         - Age: {age}
@@ -207,15 +228,17 @@ General Guidelines:
         - Designation: {designation}
 
         Your goal is to gauge their interest in the product—essentially, try to sell it.
-        Campaign Details:
-        - Name: {campaign_name}
-        - Description: {campaign_description}
+        Campaign or Product Details:
+        - Name: BrightFuture: Solar panels
+        - Description: The BrightFuture Solar Panels campaign is designed to promote the adoption of sustainable solar energy solutions for both residential and commercial properties. The panels, featuring advanced photovoltaic cells with up to 22% efficiency, are durable and built to withstand extreme weather, offering a lifespan of over 25 years. The product comes with a 25-year performance warranty and a 10-year product warranty, ensuring long-term reliability. Residential panels are priced at $250 each, while commercial panels cost $300 each. Installation costs range from $1,500 for residential setups to $5,000 for larger commercial installations. The campaign also highlights available incentives such as a 26% federal tax credit and local rebates that can reduce costs by up to 30%. With average annual savings of $1,200 for residential users and up to $15,000 for businesses, customers can expect a return on investment in as little as 4-8 years. Routine maintenance is minimal, with an annual cost of about $100, and occasional inverter replacement is required every 10-15 years. Overall, the BrightFuture Solar Panels offer an eco-friendly, cost-effective energy solution, helping customers lower their electricity bills while contributing to a cleaner, greener future.
+
+        Based on the campaign details you need to ask follow up questions 
 
         Determine whether they would be a good lead for the sales team.
     You need to briefly explain about the product specified in the campaign and try to sell the product to them. 
 
 Specific Goals:
-- Keep the conversation focused on the product. If the topic goes beyond that, politely explain that you can't provide information outside the scope.
+- Keep the conversation focused on the product. If they bring up unrelated topics, steer it back gently.
 - Introduce the product briefly and naturally.
 - Ask a relevant question to assess their interest or needs.
 - If they show interest, let them know a team member will reach out soon.
@@ -223,35 +246,5 @@ Specific Goals:
 
     {instructions_common}
     """
-        elif use_case == 'event_reminder':
-            context = f"""{base_intro}
-    You're reminding {name} about an upcoming event they're registered for. Confirm their attendance and answer any simple questions they might have.
-
-    Specific Goals:
-    - Gently confirm attendance.
-    - Offer helpful details (e.g. time, location, link).
-    - If they say they can't attend, thank them politely.
-
-    {instructions_common}
-    """
-        elif use_case == 'feedback':
-            context = f"""{base_intro}
-    You're calling {name} to gather quick feedback about a recent experience or event.
-
-    Specific Goals:
-    - Ask a light, open-ended question (e.g. “How was your experience?”).
-    - Be encouraging and positive.
-    - Thank them for sharing, and let them know their input matters.
-
-    {instructions_common}
-    """
-        else:
-            # Fallback general use-case
-            context = f"""{base_intro}
-    You're calling {name} regarding {campaign_description}.
-
-    {instructions_common}
-    """
-
         logger.debug(f"Context built:\n{context}")
         return context

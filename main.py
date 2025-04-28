@@ -190,17 +190,106 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
             "lead_info": {"call_sid": call_sid}
         }
 
-    # Transcript callback
+    # --- FOLLOW-UP MECHANISM ---
+    # This section manages the follow-up prompts if the user is silent.
+    followup_count = 0
+    max_followups = 3
+    followup_active = True
+    followup_task = None
+    last_user_speech = datetime.now(timezone.utc)
+
+    async def send_followup():
+        """Send a gentle follow-up prompt to the user."""
+        prompt = "Rearticulate the instruction to prompt the user for confirmation that they are still present and ready to continue in one sentence. Examples of suitable phrasing include 'Please respond so I can help you' or 'If you are still available, please reply'."
+        logger.info(f"[FLOW] Sending follow-up prompt to {call_sid}")
+        # Use role='followup' so the AI handler sends only the follow-up prompt as context
+        ai_stream = call_orchestrator.ai_handler.stream_response(
+            prompt,
+            call_orchestrator.call_states[call_sid]["lead_info"],
+            role="followup"
+        )
+        buffer = ""
+        try:
+            async for ai_token in ai_stream:
+                buffer += ai_token
+                if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
+                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                    async for audio_chunk in tts_stream:
+                        if audio_chunk:
+                            await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                    buffer = ""
+            if buffer.strip():
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                async for audio_chunk in tts_stream:
+                    if audio_chunk:
+                        await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+        except Exception as e:
+            logger.error(f"[FLOW] Error sending follow-up prompt for {call_sid}: {e}")
+
+    async def followup_monitor():
+        nonlocal followup_count, followup_active, last_user_speech
+        try:
+            while followup_active and followup_count < max_followups:
+                await asyncio.sleep(1)
+                # Check if 25 seconds have passed since last user speech
+                elapsed = (datetime.now(timezone.utc) - last_user_speech).total_seconds()
+                if elapsed >= 25:
+                    followup_count += 1
+                    logger.info(f"[FLOW] No user speech detected for 25s (attempt {followup_count}/{max_followups}) for {call_sid}")
+                    await send_followup()
+                    last_user_speech = datetime.now(timezone.utc)  # Reset timer after followup
+            if followup_count >= max_followups:
+                logger.info(f"[FLOW] Max follow-ups reached for {call_sid}. Informing user and ending call.")
+                # Inform user before closing
+                final_prompt = "Rearticulate the instruction in one sentence to prompt the user for confirmation that We did not receive a response, so we are closing the call now. Thank you and goodbye."
+                ai_stream = call_orchestrator.ai_handler.stream_response(
+                    final_prompt,
+                    call_orchestrator.call_states[call_sid]["lead_info"],
+                    role="followup"
+                )
+                buffer = ""
+                try:
+                    async for ai_token in ai_stream:
+                        buffer += ai_token
+                        if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
+                            tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                            async for audio_chunk in tts_stream:
+                                if audio_chunk:
+                                    await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                            buffer = ""
+                    if buffer.strip():
+                        tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                        async for audio_chunk in tts_stream:
+                            if audio_chunk:
+                                await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
+                except Exception as e:
+                    logger.error(f"[FLOW] Error sending final close message for {call_sid}: {e}")
+                finally:
+                    await websocket.close(code=4000, reason="No response after follow-ups.")
+        except asyncio.CancelledError:
+            logger.info(f"[FLOW] Follow-up monitor cancelled for {call_sid}")
+        except Exception as e:
+            logger.error(f"[FLOW] Error in follow-up monitor for {call_sid}: {e}")
+
+    # Start the follow-up monitor task
+    followup_task = asyncio.create_task(followup_monitor())
+
+    # --- TRANSCRIPT CALLBACK (BARGE-IN + FOLLOW-UP RESET) ---
     async def on_transcript(transcript: str, transcript_embedding):
-        nonlocal is_tts_active
+        nonlocal is_tts_active, last_user_speech, followup_count
         logger.info(f"[FLOW] Transcription received: {transcript}")
 
-        # If there is ongoing TTS, send the "clear" event to stop it
-        if is_tts_active:
+        # If there is ongoing TTS, send the "clear" event to stop it (barge-in)
+        if is_tts_active and transcript:
             logger.info(f"[FLOW] Barge-in: Stopping previous TTS for call_sid={call_sid}")
             await barge_in(websocket, stream_sid)
             logger.info("[FLOW] Sent clear event to stop ongoing TTS.")
             is_tts_active = False  # Reset TTS flag
+
+        # --- Reset follow-up monitor on any user speech ---
+        if transcript:
+            last_user_speech = datetime.now(timezone.utc)
+            followup_count = 0  # Optional: reset count if you want to allow more follow-ups after user speaks
 
         # Process transcription immediately
         call_orchestrator.call_states[call_sid]["transcript"] += " " + transcript
@@ -266,7 +355,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
 
 
     # Start STT streaming task
-    task = asyncio.create_task(call_orchestrator.speech_service.start_streaming(call_sid, on_transcript))
+    stt_task = asyncio.create_task(call_orchestrator.speech_service.start_streaming(call_sid, on_transcript))
 
     try:
         while True:
@@ -286,7 +375,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                 lead_info = call_orchestrator.call_states[call_sid].get("lead_info", {})
                 # Use streaming for intro as well
                 logger.info(f"[FLOW] Starting streaming AI intro for call_sid={call_sid}")
-                system_prompt = "Introduce yourself to the customer and start the conversation by explaining about the product"
+                system_prompt = "Introduce yourself to the customer and start the conversation by asking the customer availability"
                 try:
                     if call_record:
                         chunk = CallChunk(
@@ -364,6 +453,23 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         logger.error(f"WebSocket error for {call_sid}: {e}", exc_info=True)
 
     finally:
+        # Cancel follow-up monitor and STT tasks
+        if followup_task:
+            followup_task.cancel()
+            try:
+                await followup_task
+            except asyncio.CancelledError:
+                logger.info(f"[FLOW] Follow-up monitor task cancelled for {call_sid}")
+            except Exception as e:
+                logger.error(f"[FLOW] Error cancelling follow-up task for {call_sid}: {e}")
+        if stt_task:
+            stt_task.cancel()
+            try:
+                await stt_task
+            except asyncio.CancelledError:
+                logger.info(f"[FLOW] STT task cancelled for {call_sid}")
+            except Exception as e:
+                logger.error(f"[FLOW] Error cancelling STT task for {call_sid}: {e}")
         await call_orchestrator.speech_service.stop_streaming(call_sid)
         await websocket.close()
         if call_sid in active_connections:
