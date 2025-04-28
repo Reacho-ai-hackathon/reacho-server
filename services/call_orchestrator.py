@@ -71,7 +71,7 @@ class CallOrchestrator:
         # NOTE: Ensure MongoDB client/collections are used within the same event loop as FastAPI/Uvicorn
         logger.info("CallOrchestrator initialized successfully")
 
-    async def process_csv(self, csv_file_path, campaign_id):
+    async def process_csv(self, csv_file_path, campaign_id, campaign):
         import csv
         logger.info(f"Processing CSV file: {csv_file_path}")
         try:
@@ -106,7 +106,7 @@ class CallOrchestrator:
                         logger.info(f"Created user: {user}")
                     
                     logger.debug(f"Queueing call to: {row['phno']}")
-                    self.call_queue.put({**row, "campaign_id":campaign_id, "user_id":str(user.id)})
+                    self.call_queue.put({**row, "campaign_id":campaign_id, "user_id":str(user.id), "campaign": campaign})
                     logger.debug(f"Total row info: {row['name']}")
                     count += 1
             logger.info(f"Successfully processed CSV and queued {count} calls")

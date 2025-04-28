@@ -112,7 +112,7 @@ async def upload_csv(
 
     # Process CSV and then start call processing directly
     logger.info(f"Processing CSV file: {file_path}")
-    result = await call_orchestrator.process_csv(file_path, campaign.id)
+    result = await call_orchestrator.process_csv(file_path, campaign.id, campaign)
     logger.info(f"CSV processing result: {result}")
 
     logger.info("Starting call processing synchronously")

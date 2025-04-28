@@ -5,6 +5,9 @@ import logging
 import traceback
 from storage.db_config import get_database
 import dotenv
+from storage.db_utils import CRUDBase
+from storage.models.campaign import Campaign
+
 
 dotenv.load_dotenv()
 
@@ -29,11 +32,16 @@ def set_call_states_ref(ref):
     call_states = ref
     logger.info("Call states reference set.")
 
+class CampaignCRUD(CRUDBase[Campaign]):
+    def __init__(self):
+        super().__init__(Campaign, "campaigns")
+
 class AIResponseHandler:
     """Processes transcripts and generates responses using Gemini"""
 
     def __init__(self):
         self.model = model
+        self.campaign_crud = CampaignCRUD()
         logger.info("AIResponseHandler initialized.")
 
     async def stream_response(self, transcript, lead_info):
@@ -158,34 +166,60 @@ AI:"""
         return conversation
 
     def _create_context(self, lead_info):
+        # name,age,gender,phno,email,organisation,designation
+        # campaign = await self.campaign_crud.get(id=lead_info['campaign_id'])
+        campaign=lead_info.get('campaign', {})
+        logger.info(f"campaign info :{campaign}")
+        campaign_name = campaign.name
+        campaign_description = campaign.description
+
+
         """Create a contextual, adaptive AI prompt based on outreach purpose."""
         name = lead_info.get('name', 'the customer')
-        company = lead_info.get('company', '')
-        product = lead_info.get('product_interest', 'our services')
+        age = lead_info.get('age', '')
+        gender = lead_info.get('gender', '')
+        email = lead_info.get('email', '')
+        organisation = lead_info.get('organisation', '')
+        designation = lead_info.get('designation', '')
         use_case = lead_info.get('use_case', 'lead_qualification')  # e.g. 'event_reminder', 'feedback', etc.
 
         base_intro = "You are Reacho, a friendly, helpful, and intelligent AI voice assistant making smart outbound calls"
 
         instructions_common = """
-    General Guidelines:
-    - Speak in a natural, conversational tone. Keep it warm and human-like.
-    - Use 1-2 short, clear sentences per reply. Don't be robotic or overly scripted.
-    - Be adaptive to the user's tone and language.
-    - Ask questions only when appropriate and helpful.
-    - Be kind, especially if the person seems disinterested or confused.
-    - If the person asks you to stop, end politely and don't continue.
-    """
+General Guidelines:
+- Speak in a natural, conversational tone. Keep it warm and human-like.
+- Use 1-2 short, clear sentences per reply. Avoid sounding robotic or overly scripted.
+- Adapt to the user's tone and language.
+- Ask questions only when appropriate and helpful.
+- Be kind, especially if the person seems disinterested or confused.
+- If the person asks you to stop, end the conversation politely and do not continue.
+"""
 
         # Context depending on use case
         if use_case == 'lead_qualification':
             context = f"""{base_intro}
-    You're speaking with {name}, and your goal is to gauge their interest in {product} and determine if they'd be a good lead for the sales team.
+        You're speaking with {name}, a potential lead. Here's what we know about them:
+        - Name: {name}
+        - Age: {age}
+        - Gender: {gender}
+        - Email: {email}
+        - Organisation: {organisation}
+        - Designation: {designation}
 
-    Specific Goals:
-    - Introduce the product briefly and naturally.
-    - Ask a question to assess interest or need.
-    - If they show interest, offer to send more info or schedule a call.
-    - If not interested, thank them kindly and end the call.
+        Your goal is to gauge their interest in the product—essentially, try to sell it.
+        Campaign Details:
+        - Name: {campaign_name}
+        - Description: {campaign_description}
+
+        Determine whether they would be a good lead for the sales team.
+    You need to briefly explain about the product specified in the campaign and try to sell the product to them. 
+
+Specific Goals:
+- Keep the conversation focused on the product. If the topic goes beyond that, politely explain that you can't provide information outside the scope.
+- Introduce the product briefly and naturally.
+- Ask a relevant question to assess their interest or needs.
+- If they show interest, let them know a team member will reach out soon.
+- If they are not interested, thank them kindly and guide the conversation to a polite close.
 
     {instructions_common}
     """
@@ -214,7 +248,7 @@ AI:"""
         else:
             # Fallback general use-case
             context = f"""{base_intro}
-    You're calling {name} regarding {product}.
+    You're calling {name} regarding {campaign_description}.
 
     {instructions_common}
     """
