@@ -38,3 +38,44 @@ def get_embedding(text, model_name="text-embedding-004"):
         task_type="RETRIEVAL_DOCUMENT"
     )
     
+
+# Define the function
+def analyze_overall_sentiment(chunks):
+    """
+    Analyze the overall sentiment of a chat conversation using Gemini Pro.
+    
+    Args:
+        chunks (list): List of dicts with 'role' and 'content' keys.
+        
+    Returns:
+        str: One of 'Positive', 'Negative', or 'Neutral'
+    """
+    # Build conversation string
+    conversation = "\n".join(f"{chunk['role']}: {chunk['content']}" for chunk in chunks)
+
+    # Create the prompt
+    prompt = f"""
+Analyze the overall sentiment of the following conversation and respond with only one word: Positive, Negative, or Neutral.
+
+Conversation:
+{conversation}
+
+Overall Sentiment:"""
+
+    # Generate the response
+    model = genai.GenerativeModel('models/gemini-2.0-flash')
+    response = model.generate_content(prompt)
+    
+
+    # Clean and return
+    return response.text.strip()
+
+# # Example usage
+# chunks = [
+#     {"role": "SYSTEM", "content": "Introduce yourself to the customer and start the conversation by explaining our services."},
+#     {"role": "ASSISTANT", "content": "Hi Vijay, this is Reacho, an AI assistant calling on behalf of [Your Company]..."},
+#     {"role": "USER", "content": "Yeah. Yeah."}
+# ]
+
+# sentiment = analyze_overall_sentiment(chunks)
+# print("Overall Sentiment:", sentiment)

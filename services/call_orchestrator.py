@@ -5,6 +5,8 @@ import logging
 import aiofiles
 from datetime import datetime
 
+from bson import ObjectId
+
 from storage.db_utils import CRUDBase
 from storage.models.call_metadata import CallMetadata
 from storage.models.campaign import Campaign
@@ -14,7 +16,7 @@ from .speech_recognition_service import SpeechRecognitionService
 from .ai_response_handler import AIResponseHandler
 from .text_to_speech_service import TextToSpeechService
 from .data_logging_service import DataLoggingService
-from .utils import safe_log_doc
+from .utils import analyze_overall_sentiment, safe_log_doc
 from storage.models import User, UserCreate, UserUpdate, Campaign, CampaignCreate, CampaignUpdate, Call, CallCreate, CallUpdate, CallMetadata, CallMetadataCreate, CallMetadataUpdate
 
 # Configure module logger
@@ -163,14 +165,31 @@ class CallOrchestrator:
         call_obj = await self.call_crud.find_one({"call_sid": call_sid})
         if call_obj:
             logger.info(f"Updating call record in DB for SID {call_sid} to status {status}")
+
+
             # Set call_end_time if status is terminal
             terminal_statuses = ['completed', 'failed', 'busy', 'no-answer', 'canceled']
             update_kwargs = {"status": status}
             if status in terminal_statuses:
                 update_kwargs["call_end_time"] = datetime.now()
+            
+            if status == 'completed':
+                logger.info(f"Updating call record in DB with sentiment generation {update_kwargs}")
+                call_metadata = await self.call_metadata_crud.find_one({"call_id": ObjectId(call_obj.id)});
+                logger.info(f"CAll meta data {call_metadata}")
+                chunks = call_metadata.chunks
+                logger.info(f"Updating call record with chunks {chunks}")
+                 # Convert CallChunk objects to dicts before sentiment analysis
+                chunk_dicts = [chunk.model_dump() for chunk in chunks]
+                logger.info(f"Updating call record with chunk dicts {chunk_dicts}")
+                sentiment = analyze_overall_sentiment(chunk_dicts);
+                update_kwargs["sentiment"] = sentiment;
+                logger.info(f"Updating call record in DB for SID {call_sid} to sentiment {sentiment}")
+
             update_data = CallUpdate(**update_kwargs)
             await self.call_crud.update(str(call_obj.id), update_data)
             await self.data_logger.log_call_event(call_sid, status)
+
             # # Optionally update in-memory state if you want to keep it in sync
             # if call_sid in self.call_states:
             #     self.call_states[call_sid]['status'] = status
