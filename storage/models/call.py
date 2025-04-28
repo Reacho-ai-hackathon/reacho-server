@@ -23,6 +23,7 @@ class CallBase(BaseModel):
     call_start_time: Optional[datetime] = None
     call_end_time: Optional[datetime] = None
     sentiment: Optional[str] = None
+    summary: Optional[str] = None
 
 
 class CallCreate(CallBase):
@@ -36,6 +37,7 @@ class CallUpdate(BaseModel):
     call_start_time: Optional[datetime] = None
     call_end_time: Optional[datetime] = None
     sentiment: Optional[str] = None
+    summary: Optional[str] = None
 
 
 class Call(MongoModel, CallBase):

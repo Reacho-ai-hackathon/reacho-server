@@ -40,42 +40,66 @@ def get_embedding(text, model_name="text-embedding-004"):
     
 
 # Define the function
-def analyze_overall_sentiment(chunks):
+def analyze_conversation(chunks):
     """
-    Analyze the overall sentiment of a chat conversation using Gemini Pro.
-    
+    Analyze the overall sentiment and summarize a chat conversation using Gemini Pro.
+
     Args:
         chunks (list): List of dicts with 'role' and 'content' keys.
-        
+
     Returns:
-        str: One of 'Positive', 'Negative', or 'Neutral'
+        dict: {
+            'sentiment': 'Positive' | 'Negative' | 'Neutral',
+            'summary': '...'
+        }
     """
     # Build conversation string
     conversation = "\n".join(f"{chunk['role']}: {chunk['content']}" for chunk in chunks)
 
-    # Create the prompt
+    # Create the combined prompt
     prompt = f"""
-Analyze the overall sentiment of the following conversation and respond with only one word: Positive, Negative, or Neutral.
+Analyze the following conversation and provide:
+1. Overall Sentiment (just one word: Positive, Negative, or Neutral)
+2. A brief summary (4-5 sentences)
+
+Format your response like this:
+Sentiment: <Sentiment>
+Summary: <Summary text>
 
 Conversation:
 {conversation}
-
-Overall Sentiment:"""
+"""
 
     # Generate the response
     model = genai.GenerativeModel('models/gemini-2.0-flash')
     response = model.generate_content(prompt)
-    
 
-    # Clean and return
-    return response.text.strip()
+    # Parse output
+    output = response.text.strip()
+    sentiment = ""
+    summary = ""
 
-# # Example usage
+    for line in output.splitlines():
+        if line.strip().lower().startswith("sentiment:"):
+            sentiment = line.split(":", 1)[1].strip()
+        elif line.strip().lower().startswith("summary:"):
+            summary = line.split(":", 1)[1].strip()
+        elif summary and not line.strip().startswith("Sentiment:"):
+            summary += " " + line.strip()
+
+    return {
+        "sentiment": sentiment,
+        "summary": summary
+    }
+
+
+# Example usage
 # chunks = [
 #     {"role": "SYSTEM", "content": "Introduce yourself to the customer and start the conversation by explaining our services."},
 #     {"role": "ASSISTANT", "content": "Hi Vijay, this is Reacho, an AI assistant calling on behalf of [Your Company]..."},
 #     {"role": "USER", "content": "Yeah. Yeah."}
 # ]
 
-# sentiment = analyze_overall_sentiment(chunks)
-# print("Overall Sentiment:", sentiment)
+# result = analyze_conversation(chunks)
+# print("Overall Sentiment:", result["sentiment"])
+# print("Conversation Summary:", result["summary"])

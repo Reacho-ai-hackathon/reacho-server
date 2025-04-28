@@ -16,7 +16,7 @@ from .speech_recognition_service import SpeechRecognitionService
 from .ai_response_handler import AIResponseHandler
 from .text_to_speech_service import TextToSpeechService
 from .data_logging_service import DataLoggingService
-from .utils import analyze_overall_sentiment, safe_log_doc
+from .utils import analyze_conversation
 from storage.models import User, UserCreate, UserUpdate, Campaign, CampaignCreate, CampaignUpdate, Call, CallCreate, CallUpdate, CallMetadata, CallMetadataCreate, CallMetadataUpdate
 
 # Configure module logger
@@ -182,8 +182,12 @@ class CallOrchestrator:
                  # Convert CallChunk objects to dicts before sentiment analysis
                 chunk_dicts = [chunk.model_dump() for chunk in chunks]
                 logger.info(f"Updating call record with chunk dicts {chunk_dicts}")
-                sentiment = analyze_overall_sentiment(chunk_dicts);
+                result = analyze_conversation(chunk_dicts);
+                sentiment = result["sentiment"];
+                summary = result["summary"];
+                logger.info(f"Updating call record in DB for SID {call_sid} to sentiment {sentiment} and to summary {summary}")
                 update_kwargs["sentiment"] = sentiment;
+                update_kwargs["summary"] = summary;
                 logger.info(f"Updating call record in DB for SID {call_sid} to sentiment {sentiment}")
 
             update_data = CallUpdate(**update_kwargs)
