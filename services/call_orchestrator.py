@@ -176,12 +176,12 @@ class CallOrchestrator:
             if status == 'completed':
                 logger.info(f"Updating call record in DB with sentiment generation {update_kwargs}")
                 call_metadata = await self.call_metadata_crud.find_one({"call_id": ObjectId(call_obj.id)})
-                logger.info(f"CAll meta data {call_metadata}")
+                logger.info(f"CAll meta data with {str(call_metadata.call_id)}")
                 chunks = call_metadata.chunks
-                logger.info(f"Updating call record with chunks {chunks}")
+                logger.info(f"Updating call record with chunks {len(chunks)}")
                  # Convert CallChunk objects to dicts before sentiment analysis
                 chunk_dicts = [chunk.model_dump() for chunk in chunks]
-                logger.info(f"Updating call record with chunk dicts {chunk_dicts}")
+                logger.info(f"Updating call record with chunk dicts {len(chunk_dicts)}")
                 result = analyze_conversation(chunk_dicts)
                 sentiment = result["sentiment"]
                 summary = result["summary"]

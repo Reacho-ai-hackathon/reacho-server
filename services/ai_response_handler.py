@@ -8,7 +8,7 @@ import dotenv
 from storage.db_utils import CRUDBase
 from storage.models.campaign import Campaign
 import re
-
+from google.cloud import translate_v2 as translate
 
 dotenv.load_dotenv()
 
@@ -43,6 +43,7 @@ class AIResponseHandler:
     def __init__(self):
         self.model = model
         self.campaign_crud = CampaignCRUD()
+        self.translate_client = translate.Client()
         # Define a regex pattern to match unwanted standalone tokens (e.g., punctuation marks)
         self.unwanted_pattern = r'^[\W_]+$'  # Matches tokens that consist of only punctuation or symbols (non-word characters)
         logger.info("AIResponseHandler initialized.")
@@ -63,7 +64,9 @@ class AIResponseHandler:
             else:
                 # Use full conversation history/context
                 context = self._create_context(lead_info)
-                previous_dialogue = self._get_previous_conversation(lead_info, transcript)
+                translated_transcript = self.translate_client.translate(transcript, target_language='en')
+                logger.info(f"[in AI Handler] Translated Transcript:\n {transcript} -> {translated_transcript}")
+                previous_dialogue = self._get_previous_conversation(lead_info, translated_transcript)
                 prompt = f"""{context}\n\nHere's the conversation so far:\n{previous_dialogue}\nAI:"""
 
             # transcript_embedding = genai.embed_content(
@@ -180,7 +183,7 @@ AI:"""
             past_transcripts = call_states[call_sid]["transcripts"]
 
             for human, ai in zip(past_transcripts, past_responses):
-                history.append(f"Customer: {human}\nAI: {ai}")
+                history.append(f"Customer: {human['translatedText']}\nAI: {ai}")
 
             # Append new customer input
             call_states[call_sid]["transcripts"].append(latest_input)
@@ -214,8 +217,8 @@ General Guidelines:
 - Adapt to the user's tone and language.
 - Ask questions only when appropriate and helpful.
 - Be kind, especially if the person seems disinterested or confused.
-- If the person asks you to stop, end the conversation politely and do not continue.
-- Do not perform any bookings or make promises
+- You are here to answer and prompte the product you currently do not have any other capabilities to send email or cannot schedule any slots or appointments.
+- Currently you only support talking in English, Hindi, Telugu, if user speaks any other langualy politely say that you can only speak these languages but your final response should always be in English
 """
 
         context = f"""{base_intro}
@@ -227,12 +230,12 @@ General Guidelines:
         - Organisation: {organisation}
         - Designation: {designation}
 
-        Your goal is to gauge their interest in the product—essentially, try to sell it.
-        Campaign or Product Details:
-        - Name: BrightFuture: Solar panels
-        - Description: The BrightFuture Solar Panels campaign is designed to promote the adoption of sustainable solar energy solutions for both residential and commercial properties. The panels, featuring advanced photovoltaic cells with up to 22% efficiency, are durable and built to withstand extreme weather, offering a lifespan of over 25 years. The product comes with a 25-year performance warranty and a 10-year product warranty, ensuring long-term reliability. Residential panels are priced at $250 each, while commercial panels cost $300 each. Installation costs range from $1,500 for residential setups to $5,000 for larger commercial installations. The campaign also highlights available incentives such as a 26% federal tax credit and local rebates that can reduce costs by up to 30%. With average annual savings of $1,200 for residential users and up to $15,000 for businesses, customers can expect a return on investment in as little as 4-8 years. Routine maintenance is minimal, with an annual cost of about $100, and occasional inverter replacement is required every 10-15 years. Overall, the BrightFuture Solar Panels offer an eco-friendly, cost-effective energy solution, helping customers lower their electricity bills while contributing to a cleaner, greener future.
+        Your goal is to gauge their interest, it could be feedback collection or lead pitching :-
+        Here are the Campaign or Product Details:
+        - Name: {campaign_name}
+        - Description: {campaign_description}
 
-        Based on the campaign details you need to ask follow up questions 
+        Based on the campaign details you need to ask follow up questions mentioning discount etc and only adhering to the campain details which is provided, do not speak anything outside the campaign details
 
         Determine whether they would be a good lead for the sales team.
     You need to briefly explain about the product specified in the campaign and try to sell the product to them. 
@@ -241,8 +244,8 @@ Specific Goals:
 - Keep the conversation focused on the product. If they bring up unrelated topics, steer it back gently.
 - Introduce the product briefly and naturally.
 - Ask a relevant question to assess their interest or needs.
-- If they show interest, let them know a team member will reach out soon.
 - If they are not interested, thank them kindly and guide the conversation to a polite close.
+- If they show interest, let them know a team member will reach out soon with the next steps.
 
     {instructions_common}
     """

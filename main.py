@@ -14,7 +14,7 @@ from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Gather
 from services.call_orchestrator import CallOrchestrator
 from dotenv import load_dotenv
-from services.utils import get_embedding
+from services.utils import get_embedding, detect_language_switch_intent
 from storage.db_config import init_db
 from storage.models import User, UserCreate, UserUpdate, Campaign, CampaignCreate, CampaignUpdate, Call, CallCreate, CallUpdate, CallMetadata, CallMetadataCreate, CallMetadataUpdate
 from storage.models.call_metadata import CallChunk
@@ -26,14 +26,14 @@ import logging
 import os
 
 # Add this at the beginning of your file
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join('logs', 'debug.log'))
-    ]
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.StreamHandler(),
+#         logging.FileHandler(os.path.join('logs', 'debug.log'))
+#     ]
+# )
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Reacho Voice AI System")
@@ -213,13 +213,13 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
             async for ai_token in ai_stream:
                 buffer += ai_token
                 if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
-                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                     async for audio_chunk in tts_stream:
                         if audio_chunk:
                             await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
                     buffer = ""
             if buffer.strip():
-                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                 async for audio_chunk in tts_stream:
                     if audio_chunk:
                         await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
@@ -252,13 +252,13 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                     async for ai_token in ai_stream:
                         buffer += ai_token
                         if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
-                            tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                            tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                             async for audio_chunk in tts_stream:
                                 if audio_chunk:
                                     await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
                             buffer = ""
                     if buffer.strip():
-                        tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                        tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                         async for audio_chunk in tts_stream:
                             if audio_chunk:
                                 await send_audio_to_twilio(websocket, audio_chunk, stream_sid)
@@ -279,6 +279,20 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
         nonlocal is_tts_active, last_user_speech, followup_count
         logger.info(f"[FLOW] Transcription received: {transcript}")
 
+        # Detect language switch intent
+        new_lang_code = detect_language_switch_intent(transcript)
+        logger.info(f"New lang code detected : {new_lang_code}")
+        current_lang_code = call_orchestrator.speech_service.language_codes.get(call_sid, "hi-IN")
+
+        if new_lang_code and new_lang_code != current_lang_code:
+            logger.info(f"[FLOW] Language switch intent detected for {call_sid}: {current_lang_code} → {new_lang_code}")
+            call_orchestrator.speech_service.language_codes[call_sid] = new_lang_code
+            call_orchestrator.tts_service.language_codes[call_sid] = new_lang_code
+            call_orchestrator.call_states[call_sid]["language_codes"] = new_lang_code
+            await call_orchestrator.speech_service.stop_streaming(call_sid)
+            return  # Let the streaming loop restart with new language config
+
+        # --- Barge-in: stop previous TTS if user starts speaking ---
         # If there is ongoing TTS, send the "clear" event to stop it (barge-in)
         if is_tts_active and transcript:
             logger.info(f"[FLOW] Barge-in: Stopping previous TTS for call_sid={call_sid}")
@@ -318,7 +332,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                 logger.debug(f"[FLOW] AI partial token for {call_sid}: {ai_token}")
                 # Buffer until a sentence or chunk is ready for TTS
                 if any(p in ai_token for p in [".", "!", "?", "\n"]) or len(buffer) > 80:
-                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                    tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                     chunk_count = 0
                     async for audio_chunk in tts_stream:
                         chunk_count += 1
@@ -331,7 +345,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                     buffer = ""  # Reset buffer for next sentence/chunk
             # Flush any remaining buffer after AI stream ends
             if buffer.strip():
-                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip())
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(buffer.strip(), call_sid)
                 chunk_count = 0
                 async for audio_chunk in tts_stream:
                     chunk_count += 1
@@ -407,7 +421,7 @@ async def websocket_stream(websocket: WebSocket, call_sid: str):
                     logger.error(f"[FLOW] Error while streaming AI intro for {call_sid}: {e}")
                 logger.info(f"[FLOW] Finished streaming AI intro for {call_sid}: {intro_text}")
                 logger.info(f"[FLOW] Starting streaming TTS intro for call_sid={call_sid}")
-                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(intro_text)
+                tts_stream = call_orchestrator.tts_service.stream_text_to_speech(intro_text, call_sid)
                 try:
                     chunk_count = 0
                     async for audio_chunk in tts_stream:
@@ -492,7 +506,9 @@ async def send_audio_to_twilio(websocket, audio_data: bytes, stream_sid: str):
     }
 
     await websocket.send_text(json.dumps(media_msg))
+    await send_mark_message_to_twilio(websocket, stream_sid)
 
+async def send_mark_message_to_twilio(websocket, stream_sid: str):
     # Generate a unique marker name
     mark_name = str(uuid.uuid4())
 
@@ -504,7 +520,6 @@ async def send_audio_to_twilio(websocket, audio_data: bytes, stream_sid: str):
             "name": mark_name
         }
     }
-
     await websocket.send_text(json.dumps(mark_msg))
 
 async def barge_in(websocket, stream_sid: str):
@@ -609,7 +624,7 @@ async def shutdown():
         if state.get('status') != 'completed':
             try:
                 state['status'] = 'interrupted'
-                state['end_time'] = datetime.utcnow().isoformat()
+                state['end_time'] = datetime.now(timezone.utc)
                 await call_orchestrator.data_logger.log_call_completion(call_sid, state)
             except Exception as e:
                 logger.error(f"Error logging final state for call {call_sid}: {e}")
@@ -619,6 +634,15 @@ async def shutdown():
 if __name__ == "__main__":
     os.makedirs('logs', exist_ok=True)
     os.makedirs('temp_csv', exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(os.path.join('logs', 'debug.log'))
+        ]
+    )
+    logger = logging.getLogger(__name__)
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv('PORT', 8555)))
     print("initiating dB")

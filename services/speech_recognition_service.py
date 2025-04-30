@@ -14,13 +14,16 @@ class SpeechRecognitionService:
         self.audio_queues = defaultdict(queue.Queue)  # thread-safe queues for each call_sid
         self.streaming_threads = {}  # call_sid -> Thread
         self.stop_signals = defaultdict(threading.Event)  # call_sid -> Event
+        self.language_codes = defaultdict(lambda: "en-US")  # Default per call_sid
 
-    def get_streaming_config(self):
+    def get_streaming_config(self, call_sid):
+        language_code = self.language_codes[call_sid]
         return speech.StreamingRecognitionConfig(
             config=speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.MULAW,
                 sample_rate_hertz=8000,
-                language_code="en-US",
+                language_code=language_code,
+                # alternative_language_codes=["hi-IN", "te-IN"],
                 enable_automatic_punctuation=True,
             ),
             interim_results=True,
@@ -70,7 +73,7 @@ class SpeechRecognitionService:
         try:
             logger.info(f"[{call_sid}] _run_recognizer called")
             requests = self._audio_generator(call_sid, save_audio=False)
-            config = self.get_streaming_config()
+            config = self.get_streaming_config(call_sid)
             logger.info(f"[{call_sid}] requests generator created")
             responses = self.client.streaming_recognize(config=config, requests=requests)
             for response in responses:
@@ -87,6 +90,7 @@ class SpeechRecognitionService:
                             future = asyncio.run_coroutine_threadsafe(transcript_callback(transcript, transcript_embedding), loop)
                             logger.info(f"[{call_sid}] Transcript callback scheduled")
                             result = future.result(timeout=10)
+                            self.stop_signals[call_sid].set()
                             logger.info(f"[{call_sid}] Transcript callback completed")
                         except Exception as cb_exc:
                             logger.error(f"[{call_sid}] Error in transcript callback: {cb_exc}", exc_info=True)
@@ -94,13 +98,28 @@ class SpeechRecognitionService:
             logger.error(f"[{call_sid}] Error in Google STT stream: {e}", exc_info=True)
 
     async def start_streaming(self, call_sid: str, transcript_callback):
-        self.stop_signals[call_sid].clear()
-        loop = asyncio.get_running_loop()
-        thread = threading.Thread(
-            target=self._run_recognizer,
-            args=(call_sid, transcript_callback, loop),
-            daemon=True,
-        )
-        self.streaming_threads[call_sid] = thread
-        thread.start()
+        while True:
+            self.stop_signals[call_sid].clear()
+            loop = asyncio.get_running_loop()
+            thread = threading.Thread(
+                target=self._run_recognizer,
+                args=(call_sid, transcript_callback, loop),
+                daemon=True,
+            )
+            self.streaming_threads[call_sid] = thread
+            thread.start()
+            
+            # Wait for stop signal triggered by is_final
+            while not self.stop_signals[call_sid].is_set():
+                await asyncio.sleep(0.1)
+            
+            # Stop current thread gracefully
+            self.audio_queues[call_sid].put(None)
+            thread.join(timeout=5)
+            
+            # Clear audio queue to avoid old audio mixing with new stream
+            with self.audio_queues[call_sid].mutex:
+                self.audio_queues[call_sid].queue.clear()
+            
+            # Loop restarts a new thread with fresh streaming config
 
